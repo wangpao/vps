@@ -6,9 +6,10 @@ YELLOW="\033[33m"
 BLUE="\033[36m"
 PLAIN='\033[0m'
 
-# Snell 最新版本信息 (方便统一管理和更新)
-LATEST_SNELL_VER="v5.0.0"
-LATEST_DOWNLOAD_LINK="https://dl.nssurge.com/snell/snell-server-${LATEST_SNELL_VER}-linux-amd64.zip"
+# Snell 发布信息页面，用于安装/升级时自动解析最新版本
+SNELL_RELEASE_PAGE="https://kb.nssurge.com/surge-knowledge-base/release-notes/snell"
+LATEST_SNELL_VER=""
+LATEST_DOWNLOAD_LINK=""
 
 IP4=`curl -sL -4 ip.sb`
 IP6=`curl -sL -6 ip.sb`
@@ -121,7 +122,19 @@ Install_dependency(){
     apt install unzip wget -y
 }
 
+Resolve_snell_latest() {
+    colorEcho $YELLOW "正在获取 Snell 最新版本..."
+    LATEST_SNELL_VER=$(curl -fsSL "${SNELL_RELEASE_PAGE}" | grep -Eo 'snell-server-v[0-9]+(\.[0-9]+)+-linux-amd64\.zip' | sed -E 's/snell-server-(v[0-9.]+)-linux-amd64\.zip/\1/' | sort -Vu | tail -n 1)
+    if [[ -z "${LATEST_SNELL_VER}" ]]; then
+        colorEcho $RED "无法获取 Snell 最新版本, 请检查网络或官方发布页面。"
+        return 1
+    fi
+    LATEST_DOWNLOAD_LINK="https://dl.nssurge.com/snell/snell-server-${LATEST_SNELL_VER}-linux-amd64.zip"
+    colorEcho $BLUE "Snell 最新版本: ${LATEST_SNELL_VER}"
+}
+
 Download_snell(){
+    Resolve_snell_latest || exit 1
     rm -rf /etc/snell /tmp/snell
     mkdir -p /etc/snell /tmp/snell
     colorEcho $YELLOW "下载Snell: ${LATEST_DOWNLOAD_LINK}"
@@ -286,12 +299,23 @@ EOF
 }
 
 Install_snell(){
+    if [[ -f /etc/snell/snell ]] && [[ -f "$snell_conf" ]]; then
+        colorEcho $YELLOW "检测到 Snell 已安装，将检查是否有新版本。"
+        Upgrade_snell
+        return
+    fi
+
     Install_dependency
     Generate_conf
     Download_snell
     Write_config
     Deploy_snell
-    Install_stls
+    read -p $'是否安装 ShadowTLS？[y/n]\n(默认n, 回车): ' install_stls
+    if [[ "${install_stls}" = "y" ]]; then
+        Install_stls
+    else
+        colorEcho $YELLOW "已跳过 ShadowTLS 安装"
+    fi
     colorEcho $GREEN "安装完成"
     ShowInfo
 }
@@ -440,6 +464,7 @@ Upgrade_snell() {
         colorEcho $RED "Snell未安装，无法升级。"
         return
     fi
+    Resolve_snell_latest || return
     
     installed_ver=$(grep '#' ${snell_conf} | awk -F '# ' '{print $2}')
     if [[ -z "$installed_ver" ]]; then
@@ -518,7 +543,7 @@ menu() {
 	echo -e "#      ${RED}Snell一键安装脚本${PLAIN}       #"
 	echo "################################"
 	echo " ----------------------"
-	echo -e "  ${GREEN}1.${PLAIN}  安装 Snell 和 ShadowTLS"
+	echo -e "  ${GREEN}1.${PLAIN}  安装 Snell (ShadowTLS 可选)"
 	echo -e "  ${GREEN}2.${PLAIN}  ${RED}卸载 Snell 和 ShadowTLS${PLAIN}"
 	echo -e "  ${GREEN}3.${PLAIN}  重启 Snell 和 ShadowTLS"
 	echo -e "  ${GREEN}4.${PLAIN}  查看配置"

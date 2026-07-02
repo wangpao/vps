@@ -197,8 +197,9 @@ EOF
 }
 
 Set_port(){
-    read -p $'请输入 Snell 端口 [1-65535]\n(默认: 6666，回车): ' PORT
-    [[ -z "${PORT}" ]] && PORT="6666"
+    local default_port="${DEFAULT_PORT:-6666}"
+    read -p $'请输入 Snell 端口 [1-65535]\n'"(默认: ${default_port}，回车): " PORT
+    [[ -z "${PORT}" ]] && PORT="${default_port}"
     echo $((${PORT}+0)) &>/dev/null
     if [[ $? -eq 0 ]]; then
 	if [[ ${PORT} -ge 1 ]] && [[ ${PORT} -le 65535 ]]; then
@@ -215,8 +216,13 @@ Set_port(){
 }
 
 Set_psk(){
-    read -p $'请输入 Snell PSK 密钥\n(推荐随机生成，直接回车): ' PSK
-    [[ -z "${PSK}" ]] && PSK=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 8)
+    if [[ -n "${DEFAULT_PSK}" ]]; then
+        read -p $'请输入 Snell PSK 密钥\n'"(默认保持当前值: ${DEFAULT_PSK}，回车): " PSK
+        [[ -z "${PSK}" ]] && PSK="${DEFAULT_PSK}"
+    else
+        read -p $'请输入 Snell PSK 密钥\n(推荐随机生成，直接回车): ' PSK
+        [[ -z "${PSK}" ]] && PSK=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 8)
+    fi
 }
 
 show_psk() {
@@ -494,7 +500,11 @@ Change_snell(){
         return
     fi
     colorEcho $BLUE "开始修改 Snell 配置..."
+    GetConfig
+    DEFAULT_PORT=${port}
+    DEFAULT_PSK=${psk}
     Generate_conf # 获取新的 PORT 和 PSK
+    unset DEFAULT_PORT DEFAULT_PSK
     
     # 如果ShadowTLS已安装，需要更新其启动参数中的Snell端口
     if [[ -f "$stls_conf" ]]; then

@@ -24,7 +24,14 @@ colorEcho() {
 confirm() {
     local answer
     read -p "$1 [y/n] (默认n, 回车): " answer
-    [[ "${answer}" = "y" ]]
+    [[ "${answer}" =~ ^[Yy]$ ]]
+}
+
+checkRoot() {
+    if [[ ${EUID} -ne 0 ]]; then
+        colorEcho $RED "错误：此脚本必须以 root 用户身份运行！"
+        exit 1
+    fi
 }
 
 checkSystem() {
@@ -648,6 +655,83 @@ Uninstall_menu() {
     esac
 }
 
+Get_bbr_status() {
+    BBR_ALGO=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    BBR_QDISC=$(sysctl -n net.core.default_qdisc 2>/dev/null)
+}
+
+Show_bbr_status() {
+    Get_bbr_status
+    colorEcho $YELLOW "当前 BBR 配置："
+    echo -n "  TCP 拥塞控制算法: "
+    if [[ "$BBR_ALGO" == "bbr" ]]; then
+        colorEcho $GREEN "${BBR_ALGO}"
+    else
+        colorEcho $RED "${BBR_ALGO:-未知}"
+    fi
+    echo -n "  默认队列调度算法: "
+    if [[ "$BBR_QDISC" == "fq" ]]; then
+        colorEcho $GREEN "${BBR_QDISC}"
+    else
+        colorEcho $RED "${BBR_QDISC:-未知}"
+    fi
+}
+
+Enable_bbr() {
+    colorEcho $YELLOW "正在配置 BBR..."
+    sed -i '/^[[:space:]]*net\.core\.default_qdisc[[:space:]]*=/d' /etc/sysctl.conf
+    sed -i '/^[[:space:]]*net\.ipv4\.tcp_congestion_control[[:space:]]*=/d' /etc/sysctl.conf
+    cat >> /etc/sysctl.conf <<-EOF
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+EOF
+
+    if ! sysctl -p >/dev/null 2>&1; then
+        colorEcho $RED "应用内核参数失败，请检查 /etc/sysctl.conf。"
+        return 1
+    fi
+
+    Get_bbr_status
+    if [[ "$BBR_ALGO" == "bbr" && "$BBR_QDISC" == "fq" ]]; then
+        colorEcho $GREEN "BBR 已正确开启，队列调度算法为 fq。"
+    else
+        colorEcho $RED "配置已写入，但运行状态验证失败；当前内核可能不支持 BBR。"
+        return 1
+    fi
+}
+
+BBR_menu() {
+    clear
+    echo "################################"
+    echo -e "#      ${YELLOW}管理 BBR 网络加速${PLAIN}      #"
+    echo "################################"
+    echo ""
+    Show_bbr_status
+    echo ""
+
+    if [[ "$BBR_ALGO" == "bbr" && "$BBR_QDISC" == "fq" ]]; then
+        colorEcho $GREEN "BBR 已完全开启，无需修改。"
+        return
+    fi
+
+    if confirm "是否自动配置并开启 BBR？"; then
+        Enable_bbr
+    else
+        colorEcho $YELLOW "操作已取消。"
+    fi
+}
+
+Show_bbr_menu_status() {
+    Get_bbr_status
+    if [[ "$BBR_ALGO" == "bbr" && "$BBR_QDISC" == "fq" ]]; then
+        echo -e "   ${BLUE}BBR状态:${PLAIN} ${GREEN}已开启 (bbr + fq)${PLAIN}"
+        BBR_ENABLED=true
+    else
+        echo -e "   ${BLUE}BBR状态:${PLAIN} ${RED}未开启${PLAIN}"
+        BBR_ENABLED=false
+    fi
+}
+
 menu() {
 	clear
 	echo "################################"
@@ -655,6 +739,7 @@ menu() {
 	echo "################################"
 	echo ""
 	ShowMenuInfo
+	Show_bbr_menu_status
 	echo ""
 	echo " ----------------------"
 	echo -e "  ${GREEN}1.${PLAIN}  安装 / 更新 Snell"
@@ -662,9 +747,16 @@ menu() {
 	echo -e "  ${GREEN}3.${PLAIN}  管理 ShadowTLS"
 	echo -e "  ${GREEN}4.${PLAIN}  重启服务"
 	echo -e "  ${GREEN}5.${PLAIN}  卸载"
+	if [[ "$BBR_ENABLED" != "true" ]]; then
+		echo -e "  ${GREEN}6.${PLAIN}  开启 BBR"
+	fi
 	echo -e "  ${GREEN}0.${PLAIN}  退出"
 	echo ""
-	read -p " 请选择操作[0-5]：" answer
+	if [[ "$BBR_ENABLED" == "true" ]]; then
+		read -p " 请选择操作[0-5]：" answer
+	else
+		read -p " 请选择操作[0-6]：" answer
+	fi
 	case $answer in
 		0)
 			exit 0
@@ -684,6 +776,13 @@ menu() {
 		5)
 			Uninstall_menu
 			;;
+		6)
+			if [[ "$BBR_ENABLED" != "true" ]]; then
+				BBR_menu
+			else
+				colorEcho $YELLOW "BBR 已开启，无需重复配置。"
+			fi
+			;;
 		*)
 			colorEcho $RED " 请选择正确的操作！"
    			sleep 2s
@@ -692,5 +791,6 @@ menu() {
 	esac
 }
 
+checkRoot
 checkSystem
 menu

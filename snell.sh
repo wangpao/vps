@@ -243,7 +243,22 @@ Set_sport() {
 }
 
 Set_domain() {
-    DOMAIN="gateway.icloud.com"
+    echo "请选择 ShadowTLS 伪装域名："
+    echo "  1. gateway.icloud.com（默认）"
+    echo "  2. livepeer.com"
+    echo "  3. icloud-content.com"
+    echo "  4. livepeer.studio"
+    while true; do
+        read -p "请选择 [1-4]（默认: 1，回车）: " domain_choice
+        [[ -z "$domain_choice" ]] && domain_choice="1"
+        case "$domain_choice" in
+            1) DOMAIN="gateway.icloud.com"; break ;;
+            2) DOMAIN="livepeer.com"; break ;;
+            3) DOMAIN="icloud-content.com"; break ;;
+            4) DOMAIN="livepeer.studio"; break ;;
+            *) colorEcho $RED "输入错误，请选择 1-4。" ;;
+        esac
+    done
     colorEcho $BLUE "域名：${DOMAIN}"
     echo ""
 }

@@ -198,7 +198,11 @@ EOF
 
 Set_port(){
     local default_port="${DEFAULT_PORT:-6666}"
-    read -p $'请输入 Snell 端口 [1-65535]\n'"(默认: ${default_port}，回车): " PORT
+    if [[ -n "${DEFAULT_PORT}" ]]; then
+        read -p $'请输入新的 Snell 端口 [1-65535]\n'"(当前值: ${default_port}，直接回车保持不变): " PORT
+    else
+        read -p $'请输入 Snell 端口 [1-65535]\n'"(默认: ${default_port}，回车): " PORT
+    fi
     [[ -z "${PORT}" ]] && PORT="${default_port}"
     echo $((${PORT}+0)) &>/dev/null
     if [[ $? -eq 0 ]]; then
@@ -217,7 +221,7 @@ Set_port(){
 
 Set_psk(){
     if [[ -n "${DEFAULT_PSK}" ]]; then
-        read -p $'请输入 Snell PSK 密钥\n'"(默认保持当前值: ${DEFAULT_PSK}，回车): " PSK
+        read -p $'请输入新的 Snell PSK 密钥\n'"(当前值: ${DEFAULT_PSK}，直接回车保持不变): " PSK
         [[ -z "${PSK}" ]] && PSK="${DEFAULT_PSK}"
     else
         read -p $'请输入 Snell PSK 密钥\n(推荐随机生成，直接回车): ' PSK

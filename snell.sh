@@ -253,14 +253,18 @@ Set_sport() {
 }
 
 Set_domain() {
+    local default_domain="${DEFAULT_DOMAIN:-gateway.icloud.com}"
     echo "请选择 ShadowTLS 伪装域名："
-    echo "  1. gateway.icloud.com（默认）"
+    echo "  1. gateway.icloud.com"
     echo "  2. livepeer.com"
     echo "  3. icloud-content.com"
     echo "  4. livepeer.studio"
     while true; do
-        read -p "请选择 [1-4]（默认: 1，回车）: " domain_choice
-        [[ -z "$domain_choice" ]] && domain_choice="1"
+        read -p "请选择 [1-4]（当前/默认: ${default_domain}，直接回车保持不变）: " domain_choice
+        if [[ -z "$domain_choice" ]]; then
+            DOMAIN="${default_domain}"
+            break
+        fi
         case "$domain_choice" in
             1) DOMAIN="gateway.icloud.com"; break ;;
             2) DOMAIN="livepeer.com"; break ;;
@@ -516,7 +520,9 @@ Change_snell(){
         GetConfig_stls # 获取当前的 sport, pass, domain
         SPORT=${sport} # 赋值给大写变量以供Deploy_stls使用
         PASS=${pass}
-        DOMAIN=${domain}
+        DEFAULT_DOMAIN=${domain}
+        Set_domain
+        unset DEFAULT_DOMAIN
         Deploy_stls # 使用新的PORT和旧的STLS参数重新生成服务文件
     fi
 

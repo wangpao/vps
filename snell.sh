@@ -738,8 +738,9 @@ menu() {
 	echo -e "#      ${RED}Snell一键安装脚本${PLAIN}       #"
 	echo "################################"
 	echo ""
-	ShowMenuInfo
 	Show_bbr_menu_status
+	echo ""
+	ShowMenuInfo
 	echo ""
 	echo " ----------------------"
 	echo -e "  ${GREEN}1.${PLAIN}  安装 / 更新 Snell"

@@ -10,9 +10,11 @@ PLAIN='\033[0m'
 SNELL_RELEASE_PAGE="https://kb.nssurge.com/surge-knowledge-base/release-notes/snell"
 LATEST_SNELL_VER=""
 LATEST_DOWNLOAD_LINK=""
+CONNECT_TIMEOUT=15
+MAX_DOWNLOAD_TIME=300
 
-IP4=`curl -sL -4 ip.sb`
-IP6=`curl -sL -6 ip.sb`
+IP4=`curl -sL --connect-timeout 5 --max-time 10 -4 ip.sb`
+IP6=`curl -sL --connect-timeout 5 --max-time 10 -6 ip.sb`
 CPU=`uname -m`
 snell_conf="/etc/snell/snell-server.conf"
 stls_conf="/etc/systemd/system/shadowtls.service"
@@ -98,7 +100,7 @@ Install_dependency(){
 
 Resolve_snell_latest() {
     colorEcho $YELLOW "正在获取 Snell 最新版本..."
-    LATEST_SNELL_VER=$(curl -fsSL "${SNELL_RELEASE_PAGE}" | grep -Eo 'snell-server-v[0-9]+(\.[0-9]+)+-linux-amd64\.zip' | sed -E 's/snell-server-(v[0-9.]+)-linux-amd64\.zip/\1/' | sort -Vu | tail -n 1)
+    LATEST_SNELL_VER=$(curl -fsSL --connect-timeout ${CONNECT_TIMEOUT} --max-time 60 "${SNELL_RELEASE_PAGE}" | grep -Eo 'snell-server-v[0-9]+(\.[0-9]+)+-linux-amd64\.zip' | sed -E 's/snell-server-(v[0-9.]+)-linux-amd64\.zip/\1/' | sort -Vu | tail -n 1)
     if [[ -z "${LATEST_SNELL_VER}" ]]; then
         colorEcho $RED "无法获取 Snell 最新版本, 请检查网络或官方发布页面。"
         return 1
@@ -109,30 +111,40 @@ Resolve_snell_latest() {
 
 Download_snell(){
     Resolve_snell_latest || exit 1
-    rm -rf /etc/snell /tmp/snell
-    mkdir -p /etc/snell /tmp/snell
+    rm -rf /tmp/snell
+    mkdir -p /tmp/snell
     colorEcho $YELLOW "下载Snell: ${LATEST_DOWNLOAD_LINK}"
-    wget -O /tmp/snell/snell.zip ${LATEST_DOWNLOAD_LINK}
+    wget --connect-timeout=${CONNECT_TIMEOUT} --read-timeout=30 --timeout=30 --tries=3 -O /tmp/snell/snell.zip ${LATEST_DOWNLOAD_LINK}
     if [[ $? -ne 0 ]]; then
-        colorEcho $RED "下载 Snell 失败, 请检查网络或链接有效性。"
+        colorEcho $RED "下载 Snell 失败或超时，请检查 VPS 到 dl.nssurge.com 的网络连通性。"
         exit 1
     fi
     unzip /tmp/snell/snell.zip -d /tmp/snell/
+    if [[ $? -ne 0 || ! -f /tmp/snell/snell-server ]]; then
+        colorEcho $RED "解压 Snell 失败，下载文件可能不完整。"
+        exit 1
+    fi
+    mkdir -p /etc/snell
     mv /tmp/snell/snell-server /etc/snell/snell
     chmod +x /etc/snell/snell
 }
 
 Download_stls() {
-    rm -rf /etc/snell/shadowtls
     TAG_URL="https://api.github.com/repos/ihciah/shadow-tls/releases/latest"
-    DOWN_VER=`curl -s "${TAG_URL}" --connect-timeout 10| grep -Eo '\"tag_name\"(.*?)\",' | cut -d\" -f4`
-    DOWNLOAD_LINK="https://github.com/ihciah/shadow-tls/releases/download/${DOWN_VER}/shadow-tls-x86_64-unknown-linux-musl"
-    colorEcho $YELLOW "下载ShadowTLS: ${DOWNLOAD_LINK}"
-    curl -L -H "Cache-Control: no-cache" -o /etc/snell/shadowtls ${DOWNLOAD_LINK}
-    if [[ $? -ne 0 ]]; then
-        colorEcho $RED "下载 ShadowTLS 失败, 请检查网络或链接有效性。"
+    DOWN_VER=`curl -fsSL "${TAG_URL}" --connect-timeout ${CONNECT_TIMEOUT} --max-time 60| grep -Eo '\"tag_name\"(.*?)\",' | cut -d\" -f4`
+    if [[ -z "${DOWN_VER}" ]]; then
+        colorEcho $RED "无法获取 ShadowTLS 最新版本，请检查网络或 GitHub 访问。"
         exit 1
     fi
+    DOWNLOAD_LINK="https://github.com/ihciah/shadow-tls/releases/download/${DOWN_VER}/shadow-tls-x86_64-unknown-linux-musl"
+    colorEcho $YELLOW "下载ShadowTLS: ${DOWNLOAD_LINK}"
+    curl -fL --connect-timeout ${CONNECT_TIMEOUT} --max-time ${MAX_DOWNLOAD_TIME} --retry 2 --retry-delay 2 -H "Cache-Control: no-cache" -o /tmp/shadowtls ${DOWNLOAD_LINK}
+    if [[ $? -ne 0 ]]; then
+        colorEcho $RED "下载 ShadowTLS 失败或超时，请检查 VPS 到 GitHub 的网络连通性。"
+        exit 1
+    fi
+    mkdir -p /etc/snell
+    mv /tmp/shadowtls /etc/snell/shadowtls
     chmod +x /etc/snell/shadowtls
 }
 
@@ -576,14 +588,19 @@ Upgrade_snell() {
     
     # 下载新版本
     colorEcho $YELLOW "下载新版Snell: ${LATEST_DOWNLOAD_LINK}"
-    wget -O /tmp/snell.zip ${LATEST_DOWNLOAD_LINK}
+    wget --connect-timeout=${CONNECT_TIMEOUT} --read-timeout=30 --timeout=30 --tries=3 -O /tmp/snell.zip ${LATEST_DOWNLOAD_LINK}
     if [[ $? -ne 0 ]]; then
-        colorEcho $RED "下载新版本失败，升级已中止。"
+        colorEcho $RED "下载新版本失败或超时，升级已中止。"
         systemctl start snell
         return
     fi
     
     unzip -o /tmp/snell.zip -d /tmp/
+    if [[ $? -ne 0 || ! -f /tmp/snell-server ]]; then
+        colorEcho $RED "解压新版本失败，升级已中止。"
+        systemctl start snell
+        return
+    fi
     mv /tmp/snell-server /etc/snell/snell
     chmod +x /etc/snell/snell
     rm -f /tmp/snell.zip

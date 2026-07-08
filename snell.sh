@@ -109,16 +109,49 @@ Resolve_snell_latest() {
     colorEcho $BLUE "Snell 最新版本: ${LATEST_SNELL_VER}"
 }
 
+Use_local_snell_zip() {
+    local target_zip="$1"
+    local local_zip="${SNELL_ZIP}"
+
+    if [[ -n "${local_zip}" ]]; then
+        if [[ ! -f "${local_zip}" ]]; then
+            colorEcho $RED "SNELL_ZIP 指定的文件不存在: ${local_zip}"
+            return 1
+        fi
+        cp "${local_zip}" "${target_zip}"
+        return $?
+    fi
+
+    colorEcho $YELLOW "如果 VPS 无法连接 dl.nssurge.com，可先在本地下载 Snell zip，再上传到 VPS。"
+    colorEcho $YELLOW "例如上传到: /tmp/snell-server-${LATEST_SNELL_VER}-linux-amd64.zip"
+    read -p "请输入已上传的 Snell zip 文件路径（直接回车退出）: " local_zip
+    if [[ -z "${local_zip}" ]]; then
+        return 1
+    fi
+    if [[ ! -f "${local_zip}" ]]; then
+        colorEcho $RED "文件不存在: ${local_zip}"
+        return 1
+    fi
+    cp "${local_zip}" "${target_zip}"
+}
+
 Download_snell(){
     Resolve_snell_latest || exit 1
     rm -rf /tmp/snell
     mkdir -p /tmp/snell
-    colorEcho $YELLOW "下载Snell: ${LATEST_DOWNLOAD_LINK}"
-    wget --connect-timeout=${CONNECT_TIMEOUT} --read-timeout=30 --timeout=30 --tries=3 -O /tmp/snell/snell.zip ${LATEST_DOWNLOAD_LINK}
-    if [[ $? -ne 0 ]]; then
-        colorEcho $RED "下载 Snell 失败或超时，请检查 VPS 到 dl.nssurge.com 的网络连通性。"
-        exit 1
+
+    if [[ -n "${SNELL_ZIP}" ]]; then
+        colorEcho $YELLOW "使用本地 Snell 安装包: ${SNELL_ZIP}"
+        Use_local_snell_zip /tmp/snell/snell.zip || exit 1
+    else
+        colorEcho $YELLOW "下载Snell: ${LATEST_DOWNLOAD_LINK}"
+        wget --connect-timeout=${CONNECT_TIMEOUT} --read-timeout=30 --timeout=30 --tries=3 -O /tmp/snell/snell.zip ${LATEST_DOWNLOAD_LINK}
+        if [[ $? -ne 0 ]]; then
+            colorEcho $RED "下载 Snell 失败或超时，请检查 VPS 到 dl.nssurge.com 的网络连通性。"
+            Use_local_snell_zip /tmp/snell/snell.zip || exit 1
+        fi
     fi
+
     unzip /tmp/snell/snell.zip -d /tmp/snell/
     if [[ $? -ne 0 || ! -f /tmp/snell/snell-server ]]; then
         colorEcho $RED "解压 Snell 失败，下载文件可能不完整。"
@@ -590,9 +623,12 @@ Upgrade_snell() {
     colorEcho $YELLOW "下载新版Snell: ${LATEST_DOWNLOAD_LINK}"
     wget --connect-timeout=${CONNECT_TIMEOUT} --read-timeout=30 --timeout=30 --tries=3 -O /tmp/snell.zip ${LATEST_DOWNLOAD_LINK}
     if [[ $? -ne 0 ]]; then
-        colorEcho $RED "下载新版本失败或超时，升级已中止。"
-        systemctl start snell
-        return
+        colorEcho $RED "下载新版本失败或超时，请检查 VPS 到 dl.nssurge.com 的网络连通性。"
+        if ! Use_local_snell_zip /tmp/snell.zip; then
+            colorEcho $RED "升级已中止。"
+            systemctl start snell
+            return
+        fi
     fi
     
     unzip -o /tmp/snell.zip -d /tmp/

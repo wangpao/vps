@@ -133,7 +133,9 @@ verify_reality_proxy_path() {
     done
     [[ -n "${socks_port}" ]] || fail "No local port is available for the end-to-end check."
 
-    CLIENT_CONFIG_TEMP="$(mktemp)"
+    # Xray infers the config format from the filename extension. A bare
+    # `mktemp` path causes v26.3.27 to fail before it can parse valid JSON.
+    CLIENT_CONFIG_TEMP="$(mktemp --suffix=.json)"
     CLIENT_LOG_TEMP="$(mktemp)"
     jq -n \
         --argjson socks_port "${socks_port}" \

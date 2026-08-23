@@ -12,6 +12,7 @@
 #   REALITY_SERVER_NAME=www.amazon.com
 #   REALITY_TARGET=www.amazon.com:443
 #   SERVER_ADDRESS=203.0.113.10
+#   NODE_NAME="Frankfurt 01"
 #
 # Primary references:
 #   https://github.com/XTLS/Xray-install
@@ -32,6 +33,7 @@ REALITY_SERVER_NAME="${REALITY_SERVER_NAME:-www.amazon.com}"
 REALITY_TARGET="${REALITY_TARGET:-${REALITY_SERVER_NAME}:443}"
 SERVER_ADDRESS="${SERVER_ADDRESS:-}"
 XRAY_VERSION="${XRAY_VERSION:-v26.3.27}"
+NODE_NAME="${NODE_NAME:-Joe Test}"
 
 INSTALLER_FILE=""
 CONFIG_TEMP=""
@@ -78,6 +80,9 @@ validate_environment() {
     [[ "${REALITY_SERVER_NAME}" == *.* ]] || fail "REALITY_SERVER_NAME must be a domain name."
     [[ "${REALITY_TARGET}" =~ ^[A-Za-z0-9.-]+:[0-9]+$ ]] || fail "REALITY_TARGET must look like domain.example:443."
     [[ "${XRAY_VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "XRAY_VERSION must look like v26.3.27."
+    [[ -n "${NODE_NAME//[[:space:]]/}" ]] || fail "NODE_NAME cannot be empty."
+    [[ "${NODE_NAME}" != *","* && "${NODE_NAME}" != *"="* && "${NODE_NAME}" != *$'\n'* && "${NODE_NAME}" != *$'\r'* ]] \
+        || fail "NODE_NAME cannot contain commas, equals signs, or line breaks."
 
 }
 
@@ -264,15 +269,16 @@ write_result() {
 
     {
         printf '%s\n' "Joe test server is ready."
-        printf '\n%s\n' "Joe configuration"
-        printf '%-20s %s\n' "host:" "${SERVER_ADDRESS}"
-        printf '%-20s %s\n' "port:" "${PORT}"
-        printf '%-20s %s\n' "uuid:" "${UUID_VALUE}"
-        printf '%-20s %s\n' "serverName:" "${REALITY_SERVER_NAME}"
-        printf '%-20s %s\n' "realityPublicKey:" "${REALITY_PUBLIC_KEY}"
-        printf '%-20s %s\n' "realityShortID:" "${REALITY_SHORT_ID}"
-        printf '%-20s %s\n' "transport:" "RAW"
-        printf '%-20s %s\n' "flow:" "xtls-rprx-vision"
+        printf '\n%s\n\n' "Joe configuration"
+        printf '%s\n' "#!JOE 1"
+        printf '%s = vless, %s, %s, uuid=%s, sni=%s, public-key=%s, short-id=%s\n' \
+            "${NODE_NAME}" \
+            "${SERVER_ADDRESS}" \
+            "${PORT}" \
+            "${UUID_VALUE}" \
+            "${REALITY_SERVER_NAME}" \
+            "${REALITY_PUBLIC_KEY}" \
+            "${REALITY_SHORT_ID}"
         printf '\n%s\n%s\n' "Compatible VLESS URI" "${VLESS_URI}"
         printf '\n%s\n' "Server status"
         printf '%-20s %s\n' "Xray:" "${xray_version_line}"

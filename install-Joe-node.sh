@@ -2,7 +2,7 @@
 
 # Installs a disposable Xray VLESS + Vision + RAW + REALITY test server.
 #
-# Supported host: Ubuntu 26.04 with systemd (amd64 or arm64).
+# Supported host: Ubuntu 24.04 or newer with systemd (amd64 or arm64).
 # Run as root:
 #   bash install-test-vless-reality.sh
 #
@@ -71,7 +71,9 @@ validate_environment() {
     # shellcheck disable=SC1091
     source /etc/os-release
     [[ "${ID:-}" == "ubuntu" ]] || fail "This test installer supports Ubuntu only."
-    [[ "${VERSION_ID:-}" == "26.04" ]] || fail "Expected Ubuntu 26.04; found ${PRETTY_NAME:-unknown system}."
+    [[ -n "${VERSION_ID:-}" ]] || fail "Cannot identify the Ubuntu version."
+    dpkg --compare-versions "${VERSION_ID}" ge "24.04" \
+        || fail "Ubuntu 24.04 or newer is required; found ${PRETTY_NAME:-unknown system}."
     [[ -d /run/systemd/system ]] || fail "systemd is required."
 
     [[ "${PORT}" =~ ^[0-9]+$ ]] || fail "PORT must be a number."

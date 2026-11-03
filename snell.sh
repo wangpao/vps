@@ -37,10 +37,24 @@ checkRoot() {
 }
 
 checkSystem() {
-    if [[ $(lsb_release -rs) < "22.04" ]]; then
-        colorEcho $RED "仅支持Ubuntu 22.04及以上版本"
-        exit 1
+    if [[ -f /etc/os-release ]]; then
+        . /etc/os-release
+        if [[ "$ID" == "ubuntu" ]]; then
+            if dpkg --compare-versions "${VERSION_ID:-0}" lt "22.04"; then
+                colorEcho $RED "仅支持 Ubuntu 22.04 及以上版本"
+                exit 1
+            fi
+            return
+        elif [[ "$ID" == "debian" ]]; then
+            if dpkg --compare-versions "${VERSION_ID:-0}" lt "11"; then
+                colorEcho $RED "仅支持 Debian 11 及以上版本"
+                exit 1
+            fi
+            return
+        fi
     fi
+    colorEcho $RED "仅支持 Debian 11+ 或 Ubuntu 22.04+ 系统"
+    exit 1
 }
 
 status() {
@@ -212,8 +226,15 @@ EOF
     systemctl daemon-reload
     systemctl enable snell
     systemctl restart snell
-    echo "net.ipv4.tcp_fastopen = 3" >> /etc/sysctl.conf
-    sysctl -p
+    mkdir -p /etc/sysctl.d
+    if [[ -f /etc/sysctl.conf ]]; then
+        sed -i '/^[[:space:]]*net\.ipv4\.tcp_fastopen[[:space:]]*=/d' /etc/sysctl.conf
+    fi
+    if [[ -f /etc/sysctl.d/99-snell.conf ]]; then
+        sed -i '/^[[:space:]]*net\.ipv4\.tcp_fastopen[[:space:]]*=/d' /etc/sysctl.d/99-snell.conf
+    fi
+    echo "net.ipv4.tcp_fastopen = 3" >> /etc/sysctl.d/99-snell.conf
+    sysctl --system >/dev/null 2>&1 || sysctl -p /etc/sysctl.d/99-snell.conf >/dev/null 2>&1
 }
 
 Deploy_stls() {
@@ -766,16 +787,24 @@ Show_bbr_status() {
 }
 
 Enable_bbr() {
+    local sysctl_file="/etc/sysctl.d/99-snell.conf"
+    mkdir -p /etc/sysctl.d
     colorEcho $YELLOW "正在配置 BBR..."
-    sed -i '/^[[:space:]]*net\.core\.default_qdisc[[:space:]]*=/d' /etc/sysctl.conf
-    sed -i '/^[[:space:]]*net\.ipv4\.tcp_congestion_control[[:space:]]*=/d' /etc/sysctl.conf
-    cat >> /etc/sysctl.conf <<-EOF
+    if [[ -f /etc/sysctl.conf ]]; then
+        sed -i '/^[[:space:]]*net\.core\.default_qdisc[[:space:]]*=/d' /etc/sysctl.conf
+        sed -i '/^[[:space:]]*net\.ipv4\.tcp_congestion_control[[:space:]]*=/d' /etc/sysctl.conf
+    fi
+    if [[ -f "$sysctl_file" ]]; then
+        sed -i '/^[[:space:]]*net\.core\.default_qdisc[[:space:]]*=/d' "$sysctl_file"
+        sed -i '/^[[:space:]]*net\.ipv4\.tcp_congestion_control[[:space:]]*=/d' "$sysctl_file"
+    fi
+    cat >> "$sysctl_file" <<-EOF
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 EOF
 
-    if ! sysctl -p >/dev/null 2>&1; then
-        colorEcho $RED "应用内核参数失败，请检查 /etc/sysctl.conf。"
+    if ! (sysctl --system >/dev/null 2>&1 || sysctl -p "$sysctl_file" >/dev/null 2>&1); then
+        colorEcho $RED "应用内核参数失败，请检查 ${sysctl_file}。"
         return 1
     fi
 

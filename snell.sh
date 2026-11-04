@@ -11,13 +11,11 @@ SNELL_RELEASE_PAGE="https://kb.nssurge.com/surge-knowledge-base/release-notes/sn
 LATEST_SNELL_VER=""
 LATEST_DOWNLOAD_LINK=""
 CONNECT_TIMEOUT=15
-MAX_DOWNLOAD_TIME=300
 
 IP4=`curl -sL --connect-timeout 5 --max-time 10 -4 ip.sb`
 IP6=`curl -sL --connect-timeout 5 --max-time 10 -6 ip.sb`
 CPU=`uname -m`
 snell_conf="/etc/snell/snell-server.conf"
-stls_conf="/etc/systemd/system/shadowtls.service"
 
 colorEcho() {
     echo -e "${1}${@:2}${PLAIN}"
@@ -72,34 +70,6 @@ status() {
     fi
     res=`ss -nutlp| grep ${tmp} | grep -i snell`
     if [[ -z $res ]]; then
-	echo 2
-    else
-	echo 3
-	return
-    fi
-}
-
-status_stls() {
-    if [[ ! -f /etc/snell/shadowtls ]]; then
-        echo 0
-        return
-    fi
-    if [[ ! -f $stls_conf ]]; then
-        echo 1
-        return
-    fi
-    if [[ -f "$snell_conf" ]]; then
-        V6=`grep ipv6 ${snell_conf} | awk -F '= ' '{print $2}'`
-    else
-        V6="false"
-    fi
-    if [[ $V6 = "true" ]]; then
-	tmp2=`grep listen ${stls_conf} | cut -d- -f7 | cut -d: -f4`
-    else
-	tmp2=`grep listen ${stls_conf} | cut -d- -f7 | cut -d: -f2`
-    fi
-    res2=`ss -nutlp| grep ${tmp2} | grep -i shadowtls`
-    if [[ -z $res2 ]]; then
 	echo 2
     else
 	echo 3
@@ -193,36 +163,10 @@ Download_snell(){
     chmod +x /etc/snell/snell
 }
 
-Download_stls() {
-    TAG_URL="https://api.github.com/repos/ihciah/shadow-tls/releases/latest"
-    DOWN_VER=`curl -fsSL "${TAG_URL}" --connect-timeout ${CONNECT_TIMEOUT} --max-time 60| grep -Eo '\"tag_name\"(.*?)\",' | cut -d\" -f4`
-    if [[ -z "${DOWN_VER}" ]]; then
-        colorEcho $RED "无法获取 ShadowTLS 最新版本，请检查网络或 GitHub 访问。"
-        exit 1
-    fi
-    DOWNLOAD_LINK="https://github.com/ihciah/shadow-tls/releases/download/${DOWN_VER}/shadow-tls-x86_64-unknown-linux-musl"
-    colorEcho $YELLOW "下载ShadowTLS: ${DOWNLOAD_LINK}"
-    curl -fL --connect-timeout ${CONNECT_TIMEOUT} --max-time ${MAX_DOWNLOAD_TIME} --retry 2 --retry-delay 2 -H "Cache-Control: no-cache" -o /tmp/shadowtls ${DOWNLOAD_LINK}
-    if [[ $? -ne 0 ]]; then
-        colorEcho $RED "下载 ShadowTLS 失败或超时，请检查 VPS 到 GitHub 的网络连通性。"
-        exit 1
-    fi
-    mkdir -p /etc/snell
-    mv /tmp/shadowtls /etc/snell/shadowtls
-    chmod +x /etc/snell/shadowtls
-}
-
 Generate_conf(){
     Set_port
     Set_psk
     show_psk
-}
-
-Generate_stls() {
-    Set_sport
-    Set_domain
-    show_domain
-    Set_pass
 }
 
 Deploy_snell(){
@@ -254,31 +198,6 @@ EOF
     sysctl --system >/dev/null 2>&1 || sysctl -p /etc/sysctl.d/99-snell.conf >/dev/null 2>&1
 }
 
-Deploy_stls() {
-    cd /etc/systemd/system
-    cat > shadowtls.service<<-EOF
-[Unit]
-Description=Shadow-TLS Server Service
-Documentation=man:sstls-server
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/etc/snell/shadowtls --fastopen --v3 server --listen 0.0.0.0:$SPORT --server 127.0.0.1:$PORT --tls $DOMAIN --password $PASS
-StandardOutput=syslog
-StandardError=syslog
-SyslogIdentifier=shadow-tls
-Environment=MONOIO_FORCE_LEGACY_DRIVER=1
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl daemon-reload
-    systemctl enable shadowtls
-    systemctl restart shadowtls
-}
-
 Set_port(){
     local default_port="${DEFAULT_PORT:-6666}"
     if [[ -n "${DEFAULT_PORT}" ]]; then
@@ -303,13 +222,21 @@ Set_port(){
 }
 
 Set_psk(){
-    if [[ -n "${DEFAULT_PSK}" ]]; then
-        read -p $'请输入新的 Snell PSK 密钥\n'"(当前值: ${DEFAULT_PSK}，直接回车保持不变): " PSK
-        [[ -z "${PSK}" ]] && PSK="${DEFAULT_PSK}"
-    else
-        read -p $'请输入 Snell PSK 密钥\n(推荐随机生成 12 位，直接回车): ' PSK
-        [[ -z "${PSK}" ]] && PSK=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
-    fi
+    while true; do
+        if [[ -n "${DEFAULT_PSK}" ]]; then
+            read -p $'请输入新的 Snell PSK 密钥 (至少 12 位)\n'"(当前值: ${DEFAULT_PSK}，直接回车保持不变): " PSK
+            [[ -z "${PSK}" ]] && PSK="${DEFAULT_PSK}"
+        else
+            read -p $'请输入 Snell PSK 密钥 (至少 12 位)\n(推荐随机生成 12 位，直接回车): ' PSK
+            [[ -z "${PSK}" ]] && PSK=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
+        fi
+        if [[ ${#PSK} -lt 12 || ${#PSK} -gt 255 ]]; then
+            colorEcho $RED "PSK 长度需在 12~255 位之间（当前 ${#PSK} 位），请重新输入或回车随机生成。"
+            DEFAULT_PSK=""
+        else
+            break
+        fi
+    done
 }
 
 show_psk() {
@@ -317,74 +244,29 @@ show_psk() {
     echo ""
 }
 
-Set_sport() {
-    read -p $'请输入 ShadowTLS 端口 [1-65535]\n(默认: 9999，回车): ' SPORT
-    [[ -z "${SPORT}" ]] && SPORT="9999"
-    echo $((${SPORT}+0)) &>/dev/null
-    if [[ $? -eq 0 ]]; then
-	if [[ ${SPORT} -ge 1 ]] && [[ ${SPORT} -le 65535 ]]; then
-		colorEcho $BLUE "端口: ${SPORT}"
-		echo ""
-	else
-		colorEcho $RED "输入错误, 请输入正确的端口。"
-		Set_sport
-	fi
-    else
-	colorEcho $RED "输入错误, 请输入数字。"
-	Set_sport
-    fi
-}
-
-Set_domain() {
-    local default_domain="${DEFAULT_DOMAIN:-gateway.icloud.com}"
-    echo "请选择 ShadowTLS 伪装域名："
-    echo "  1. gateway.icloud.com"
-    echo "  2. livepeer.com"
-    echo "  3. icloud-content.com"
-    echo "  4. livepeer.studio"
-    while true; do
-        read -p "请选择 [1-4]（当前/默认: ${default_domain}，直接回车保持不变）: " domain_choice
-        if [[ -z "$domain_choice" ]]; then
-            DOMAIN="${default_domain}"
-            break
-        fi
-        case "$domain_choice" in
-            1) DOMAIN="gateway.icloud.com"; break ;;
-            2) DOMAIN="livepeer.com"; break ;;
-            3) DOMAIN="icloud-content.com"; break ;;
-            4) DOMAIN="livepeer.studio"; break ;;
-            *) colorEcho $RED "输入错误，请选择 1-4。" ;;
-        esac
-    done
-    colorEcho $BLUE "域名：${DOMAIN}"
-    echo ""
-}
-
-show_domain() {
-	colorEcho $BLUE "域名：${DOMAIN}"
-	echo ""
-}
-
-Set_pass() {
-    read -p $'请设置ShadowTLS的密码\n(默认随机生成, 回车): ' PASS
-    [[ -z "$PASS" ]] && PASS=`cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 8 | head -n 1`
-    colorEcho $BLUE " 密码：$PASS"
-    echo ""
-}
-
 Write_config(){
     if [[ -z "${LATEST_SNELL_VER}" ]] && [[ -f "${snell_conf}" ]]; then
         LATEST_SNELL_VER=$(grep '^# ' ${snell_conf} | awk -F '# ' '{print $2}')
     fi
-    cat > ${snell_conf}<<-EOF
+    if [[ "${LATEST_SNELL_VER}" == v6* ]]; then
+        cat > ${snell_conf}<<-EOF
+[snell-server]
+listen = 0.0.0.0:${PORT}
+psk = ${PSK}
+mode = default
+dns-ip-preference = default
+# ${LATEST_SNELL_VER}
+EOF
+    else
+        cat > ${snell_conf}<<-EOF
 [snell-server]
 listen = 0.0.0.0:${PORT}
 psk = ${PSK}
 ipv6 = false
-obfs = off
 tfo = true
 # ${LATEST_SNELL_VER}
 EOF
+    fi
 }
 
 Install_snell(){
@@ -408,28 +290,7 @@ Install_or_upgrade_snell(){
         Upgrade_snell
     else
         Install_snell
-        echo ""
-        colorEcho $YELLOW "如需启用 ShadowTLS，请进入「管理 ShadowTLS」菜单安装。"
     fi
-}
-
-Install_stls() {
-    if [[ ! -f "$snell_conf" ]]; then
-        colorEcho $RED "请先安装 Snell，再安装 ShadowTLS。"
-        return
-    fi
-    if [[ -f /etc/snell/shadowtls ]] && [[ -f "$stls_conf" ]]; then
-        if ! confirm "ShadowTLS 已安装，是否重新安装并覆盖配置？"; then
-            colorEcho $YELLOW "取消安装"
-            return
-        fi
-    fi
-    GetConfig
-    PORT=${port}
-    Generate_stls
-    Download_stls
-    Deploy_stls
-    colorEcho $GREEN "ShadowTLS 安装完成"
 }
 
 Restart_all(){
@@ -439,10 +300,6 @@ Restart_all(){
     else
         colorEcho $YELLOW "Snell 未安装，跳过重启"
     fi
-    if [[ -f "$stls_conf" ]]; then
-        systemctl restart shadowtls
-        colorEcho $BLUE "ShadowTLS已重启"
-    fi
 }
 
 Stop_snell(){
@@ -451,38 +308,13 @@ Stop_snell(){
 }
 
 Uninstall_all(){
-    if confirm "是否卸载 Snell 和 ShadowTLS？"; then
+    if confirm "是否卸载 Snell？"; then
         systemctl stop snell >/dev/null 2>&1
         systemctl disable snell >/dev/null 2>&1
         rm -f /etc/systemd/system/snell.service
-
-	if [[ -f "$stls_conf" ]]; then
-		systemctl stop shadowtls >/dev/null 2>&1
-		systemctl disable shadowtls >/dev/null 2>&1
-		rm -f /etc/systemd/system/shadowtls.service
-	fi
- 
-	rm -rf /etc/snell
-	systemctl daemon-reload
-	colorEcho $GREEN "Snell 及 ShadowTLS 已经卸载完毕"
-    else
-	colorEcho $YELLOW "取消卸载"
-    fi
-}
-
-Uninstall_stls(){
-    if [[ ! -f /etc/snell/shadowtls ]] && [[ ! -f "$stls_conf" ]]; then
-        colorEcho $YELLOW "ShadowTLS 未安装"
-        return
-    fi
-
-    if confirm "是否单独卸载 ShadowTLS？"; then
-        systemctl stop shadowtls >/dev/null 2>&1
-        systemctl disable shadowtls >/dev/null 2>&1
-        rm -f /etc/systemd/system/shadowtls.service
-        rm -f /etc/snell/shadowtls
+        rm -rf /etc/snell
         systemctl daemon-reload
-        colorEcho $GREEN "ShadowTLS 已经卸载完毕"
+        colorEcho $GREEN "Snell 已经卸载完毕"
     else
         colorEcho $YELLOW "取消卸载"
     fi
@@ -498,19 +330,12 @@ ShowInfo() {
     colorEcho $BLUE " Snell配置信息："
     GetConfig
     outputSnell
-    if [[ -f $stls_conf ]]; then
-	GetConfig_stls
-	outputSTLS
-	echo ""
-	echo -e " ${BLUE}若要使用ShadowTLS, 请将${PLAIN}${RED} 端口 ${PLAIN}${BLUE}替换为${PLAIN}${RED} ${sport} ${PLAIN}"
-    fi
 }
 
 ShowMenuInfo() {
     echo -e "${BLUE}当前配置：${PLAIN}"
     if [[ ! -f $snell_conf ]]; then
         echo -e "   ${BLUE}Snell:${PLAIN} ${RED}未安装${PLAIN}"
-        echo -e "   ${BLUE}ShadowTLS:${PLAIN} ${RED}未安装${PLAIN}"
         return
     fi
 
@@ -523,20 +348,6 @@ ShowMenuInfo() {
     fi
     echo -e "   ${BLUE}Snell状态:${PLAIN} ${snell_status}"
     outputSnell
-
-    if [[ -f $stls_conf ]]; then
-        GetConfig_stls
-        res2=`status_stls`
-        if [[ ${res2} = "3" ]]; then
-            stls_status="${GREEN}正在运行${PLAIN}"
-        else
-            stls_status="${RED}未运行${PLAIN}"
-        fi
-        echo -e "   ${BLUE}ShadowTLS状态:${PLAIN} ${stls_status}"
-        outputSTLS
-    else
-        echo -e "   ${BLUE}ShadowTLS:${PLAIN} ${RED}未安装${PLAIN}"
-    fi
 }
 
 GetConfig() {
@@ -546,25 +357,15 @@ GetConfig() {
     fi
     psk=`grep psk ${snell_conf} | awk -F '= ' '{print $2}'`
     ipv6=`grep ipv6 ${snell_conf} | awk -F '= ' '{print $2}'`
+    mode=`grep '^mode' ${snell_conf} | awk -F '= ' '{print $2}'`
+    dns_pref=`grep '^dns-ip-preference' ${snell_conf} | awk -F '= ' '{print $2}'`
     if [[ $ipv6 == "true" ]]; then
 	IP=${IP6}
     else
 	IP=${IP4}
     fi
-    obfs=`grep obfs ${snell_conf} | awk -F '= ' '{print $2}'`
     tfo=`grep tfo ${snell_conf} | awk -F '= ' '{print $2}'`
     ver=`grep '#' ${snell_conf} | awk -F '# ' '{print $2}'`
-}
-
-GetConfig_stls() {
-    V6=`grep ipv6 ${snell_conf} | awk -F '= ' '{print $2}'`
-    if [[ $V6 = "true" ]]; then
-	sport=`grep listen ${stls_conf} | cut -d- -f7 | cut -d: -f4`
-    else
-	sport=`grep listen ${stls_conf} | cut -d- -f7 | cut -d: -f2`
-    fi
-    pass=`grep password ${stls_conf} | cut -d- -f13 | cut -d " " -f 2`
-    domain=`grep password ${stls_conf} | cut -d- -f11 | cut -d " " -f 2`
 }
 
 outputSnell() {
@@ -572,17 +373,14 @@ outputSnell() {
     echo -e "   ${BLUE}地址(IP): ${PLAIN} ${RED}${IP}${PLAIN}"
     echo -e "   ${BLUE}Snell端口(PORT)：${PLAIN} ${RED}${port}${PLAIN}"
     echo -e "   ${BLUE}Snell密钥(PSK)：${PLAIN} ${RED}${psk}${PLAIN}"
-    echo -e "   ${BLUE}IPV6：${PLAIN} ${RED}${ipv6}${PLAIN}"
-    echo -e "   ${BLUE}混淆(OBFS)：${PLAIN} ${RED}${obfs}${PLAIN}"
-    echo -e "   ${BLUE}TCP加速(TFO)：${PLAIN} ${RED}${tfo}${PLAIN}"
+    if [[ "${ver}" == v6* ]]; then
+        echo -e "   ${BLUE}加密模式(MODE)：${PLAIN} ${RED}${mode:-default}${PLAIN}"
+        echo -e "   ${BLUE}DNS偏好(DNS)：${PLAIN} ${RED}${dns_pref:-default}${PLAIN}"
+    else
+        echo -e "   ${BLUE}IPV6：${PLAIN} ${RED}${ipv6:-false}${PLAIN}"
+        echo -e "   ${BLUE}TCP加速(TFO)：${PLAIN} ${RED}${tfo:-true}${PLAIN}"
+    fi
     echo -e "   ${BLUE}Snell版本(VER)：${PLAIN} ${RED}${ver}${PLAIN}"
-}
-
-outputSTLS() {
-    echo -e "   ${BLUE}ShadowTLS端口(PORT)：${PLAIN} ${RED}${sport}${PLAIN}"
-    echo -e "   ${BLUE}ShadowTLS密码(PASS)：${PLAIN} ${RED}${pass}${PLAIN}"
-    echo -e "   ${BLUE}ShadowTLS域名(DOMAIN)：${PLAIN} ${RED}${domain}${PLAIN}"
-    echo -e "   ${BLUE}ShadowTLS版本(VER)：${PLAIN} ${RED}v3${PLAIN}"
 }
 
 Change_snell(){
@@ -592,39 +390,14 @@ Change_snell(){
     fi
     colorEcho $BLUE "开始修改 Snell 配置..."
     GetConfig
+    LATEST_SNELL_VER="${ver}"
     DEFAULT_PORT=${port}
     DEFAULT_PSK=${psk}
     Generate_conf # 获取新的 PORT 和 PSK
     unset DEFAULT_PORT DEFAULT_PSK
-    
-    # 如果ShadowTLS已安装，需要更新其启动参数中的Snell端口
-    if [[ -f "$stls_conf" ]]; then
-        colorEcho $YELLOW "检测到ShadowTLS，将同步更新其配置..."
-        GetConfig_stls # 获取当前的 sport, pass, domain
-        SPORT=${sport} # 赋值给大写变量以供Deploy_stls使用
-        PASS=${pass}
-        DEFAULT_DOMAIN=${domain}
-        Set_domain
-        unset DEFAULT_DOMAIN
-        Deploy_stls # 使用新的PORT和旧的STLS参数重新生成服务文件
-    fi
 
     Write_config # 写入新的Snell配置文件
     systemctl restart snell
-    colorEcho $GREEN "修改配置成功！"
-    ShowInfo
-}
-
-Change_stls() {
-    if [[ ! -f "$stls_conf" ]]; then
-        colorEcho $RED "未安装ShadowTLS，无法修改。"
-        return
-    fi
-    colorEcho $BLUE "开始修改 ShadowTLS 配置..."
-    GetConfig # 获取当前的 Snell port
-    PORT=${port} # 赋值给大写变量以供Deploy_stls使用
-    Generate_stls # 获取新的 SPORT, DOMAIN, PASS
-    Deploy_stls # 部署新的ShadowTLS服务
     colorEcho $GREEN "修改配置成功！"
     ShowInfo
 }
@@ -636,18 +409,19 @@ Upgrade_snell() {
     fi
     Resolve_snell_latest || return
     
-    installed_ver=$(grep '#' ${snell_conf} | awk -F '# ' '{print $2}')
+    GetConfig
+    installed_ver="${ver}"
     if [[ -z "$installed_ver" ]]; then
         colorEcho $YELLOW "无法检测到已安装版本，将尝试直接升级。"
     elif [[ "$installed_ver" == "$LATEST_SNELL_VER" ]]; then
-        colorEcho $GREEN "恭喜！当前已是最新版本 ($LATEST_SNELL_VER)，无需升级。"
+        colorEcho $GREEN "恭喜！当前已是所选最新版本 ($LATEST_SNELL_VER)，无需升级。"
         return
     fi
 
-    colorEcho $YELLOW "发现新版本！"
+    colorEcho $YELLOW "准备切换/升级版本！"
     colorEcho $BLUE "当前版本: ${installed_ver:-未知}"
-    colorEcho $BLUE "最新版本: ${LATEST_SNELL_VER}"
-    read -p "是否要升级? [y/n] (默认y, 回车): " answer
+    colorEcho $BLUE "目标版本: ${LATEST_SNELL_VER}"
+    read -p "是否确认切换/升级? [y/n] (默认y, 回车): " answer
     [[ -z "$answer" ]] && answer="y"
     if [[ "$answer" != "y" ]]; then
         colorEcho $YELLOW "已取消升级。"
@@ -679,15 +453,20 @@ Upgrade_snell() {
     chmod +x /etc/snell/snell
     rm -f /tmp/snell.zip
     
-    # 更新配置文件中的版本号
-    if grep -q '^# ' "${snell_conf}"; then
-        sed -i "s/^# .*/# ${LATEST_SNELL_VER}/" "${snell_conf}"
-    else
-        echo "# ${LATEST_SNELL_VER}" >> "${snell_conf}"
+    # 同步重写对应版本（v5/v6）的配置文件格式，并在升级到 v6 时校验 PSK 长度
+    PORT="${port}"
+    PSK="${psk}"
+    if [[ "${LATEST_SNELL_VER}" == v6* && ${#PSK} -lt 12 ]]; then
+        colorEcho $YELLOW "检测到旧版 PSK 长度不足 12 位，Snell v6 要求至少 12 位，请重新设置："
+        DEFAULT_PSK=""
+        Set_psk
+        show_psk
     fi
+    Write_config
 
     systemctl start snell
     colorEcho $GREEN "Snell已成功升级到 ${LATEST_SNELL_VER} 并重新启动！"
+    ShowInfo
 }
 
 Snell_menu() {
@@ -697,7 +476,7 @@ Snell_menu() {
     echo "################################"
     echo ""
     echo -e "  ${GREEN}1.${PLAIN}  修改 Snell 配置 (端口/密钥)"
-    echo -e "  ${GREEN}2.${PLAIN}  检查并升级 Snell"
+    echo -e "  ${GREEN}2.${PLAIN}  检查并升级/切换 Snell 版本"
     echo -e "  ${GREEN}0.${PLAIN}  返回主菜单"
     echo ""
     read -p " 请选择操作[0-2]：" answer
@@ -715,68 +494,6 @@ Snell_menu() {
             colorEcho $RED " 请选择正确的操作！"
             sleep 2s
             Snell_menu
-            ;;
-    esac
-}
-
-ShadowTLS_menu() {
-    clear
-    echo "################################"
-    echo -e "#      ${YELLOW}管理 ShadowTLS${PLAIN}        #"
-    echo "################################"
-    echo ""
-    echo -e "  ${GREEN}1.${PLAIN}  安装 ShadowTLS"
-    echo -e "  ${GREEN}2.${PLAIN}  修改 ShadowTLS 配置"
-    echo -e "  ${GREEN}3.${PLAIN}  卸载 ShadowTLS"
-    echo -e "  ${GREEN}0.${PLAIN}  返回主菜单"
-    echo ""
-    read -p " 请选择操作[0-3]：" answer
-    case $answer in
-        0)
-            menu
-            ;;
-        1)
-            Install_stls
-            ;;
-        2)
-            Change_stls
-            ;;
-        3)
-            Uninstall_stls
-            ;;
-        *)
-            colorEcho $RED " 请选择正确的操作！"
-            sleep 2s
-            ShadowTLS_menu
-            ;;
-    esac
-}
-
-Uninstall_menu() {
-    clear
-    echo "################################"
-    echo -e "#      ${RED}卸载菜单${PLAIN}              #"
-    echo "################################"
-    echo ""
-    echo -e "  ${GREEN}1.${PLAIN}  卸载 ShadowTLS"
-    echo -e "  ${GREEN}2.${PLAIN}  ${RED}卸载 Snell 和 ShadowTLS${PLAIN}"
-    echo -e "  ${GREEN}0.${PLAIN}  返回主菜单"
-    echo ""
-    read -p " 请选择操作[0-2]：" answer
-    case $answer in
-        0)
-            menu
-            ;;
-        1)
-            Uninstall_stls
-            ;;
-        2)
-            Uninstall_all
-            ;;
-        *)
-            colorEcho $RED " 请选择正确的操作！"
-            sleep 2s
-            Uninstall_menu
             ;;
     esac
 }
@@ -879,18 +596,17 @@ menu() {
 	echo " ----------------------"
 	echo -e "  ${GREEN}1.${PLAIN}  安装 / 更新 Snell"
 	echo -e "  ${GREEN}2.${PLAIN}  管理 Snell 配置"
-	echo -e "  ${GREEN}3.${PLAIN}  管理 ShadowTLS"
-	echo -e "  ${GREEN}4.${PLAIN}  重启服务"
-	echo -e "  ${GREEN}5.${PLAIN}  卸载"
+	echo -e "  ${GREEN}3.${PLAIN}  重启服务"
+	echo -e "  ${GREEN}4.${PLAIN}  卸载 Snell"
 	if [[ "$BBR_ENABLED" != "true" ]]; then
-		echo -e "  ${GREEN}6.${PLAIN}  开启 BBR"
+		echo -e "  ${GREEN}5.${PLAIN}  开启 BBR"
 	fi
 	echo -e "  ${GREEN}0.${PLAIN}  退出"
 	echo ""
 	if [[ "$BBR_ENABLED" == "true" ]]; then
-		read -p " 请选择操作[0-5]：" answer
+		read -p " 请选择操作[0-4]：" answer
 	else
-		read -p " 请选择操作[0-6]：" answer
+		read -p " 请选择操作[0-5]：" answer
 	fi
 	case $answer in
 		0)
@@ -903,15 +619,12 @@ menu() {
 			Snell_menu
 			;;
 		3)
-			ShadowTLS_menu
-			;;
-		4)
 			Restart_all
 			;;
-		5)
-			Uninstall_menu
+		4)
+			Uninstall_all
 			;;
-		6)
+		5)
 			if [[ "$BBR_ENABLED" != "true" ]]; then
 				BBR_menu
 			else

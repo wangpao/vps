@@ -113,14 +113,31 @@ Install_dependency(){
 }
 
 Resolve_snell_latest() {
-    colorEcho $YELLOW "正在获取 Snell 最新版本..."
-    LATEST_SNELL_VER=$(curl -fsSL --connect-timeout ${CONNECT_TIMEOUT} --max-time 60 "${SNELL_RELEASE_PAGE}" | grep -Eo 'snell-server-v[0-9]+(\.[0-9]+)+-linux-amd64\.zip' | sed -E 's/snell-server-(v[0-9.]+)-linux-amd64\.zip/\1/' | sort -Vu | tail -n 1)
-    if [[ -z "${LATEST_SNELL_VER}" ]]; then
-        colorEcho $RED "无法获取 Snell 最新版本, 请检查网络或官方发布页面。"
-        return 1
-    fi
+    echo "请选择要安装/切换的 Snell 版本："
+    echo "  1. Snell v5 (v5.0.1 最终稳定版，兼容 v4/v5 客户端)"
+    echo "  2. Snell v6 (最新 v6 版本，需客户端支持 v6)"
+    local ver_choice
+    while true; do
+        read -p "请选择 [1-2] (默认: 1，直接回车选 v5): " ver_choice
+        [[ -z "$ver_choice" ]] && ver_choice="1"
+        case "$ver_choice" in
+            1)
+                LATEST_SNELL_VER="v5.0.1"
+                break
+                ;;
+            2)
+                colorEcho $YELLOW "正在获取 Snell v6 最新版本..."
+                LATEST_SNELL_VER=$(curl -fsSL --connect-timeout ${CONNECT_TIMEOUT} --max-time 60 "${SNELL_RELEASE_PAGE}" | grep -Eo 'snell-server-v6(\.[0-9]+)+-linux-amd64\.zip' | sed -E 's/snell-server-(v[0-9.]+)-linux-amd64\.zip/\1/' | sort -Vu | tail -n 1)
+                [[ -z "${LATEST_SNELL_VER}" ]] && LATEST_SNELL_VER="v6.0.0"
+                break
+                ;;
+            *)
+                colorEcho $RED "输入错误，请选择 1 或 2。"
+                ;;
+        esac
+    done
     LATEST_DOWNLOAD_LINK="https://dl.nssurge.com/snell/snell-server-${LATEST_SNELL_VER}-linux-amd64.zip"
-    colorEcho $BLUE "Snell 最新版本: ${LATEST_SNELL_VER}"
+    colorEcho $BLUE "已选择 Snell 版本: ${LATEST_SNELL_VER}"
 }
 
 Use_local_snell_zip() {
@@ -290,8 +307,8 @@ Set_psk(){
         read -p $'请输入新的 Snell PSK 密钥\n'"(当前值: ${DEFAULT_PSK}，直接回车保持不变): " PSK
         [[ -z "${PSK}" ]] && PSK="${DEFAULT_PSK}"
     else
-        read -p $'请输入 Snell PSK 密钥\n(推荐随机生成，直接回车): ' PSK
-        [[ -z "${PSK}" ]] && PSK=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 8)
+        read -p $'请输入 Snell PSK 密钥\n(推荐随机生成 12 位，直接回车): ' PSK
+        [[ -z "${PSK}" ]] && PSK=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
     fi
 }
 

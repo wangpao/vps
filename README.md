@@ -10,4 +10,5 @@ bash <(curl -fsSL https://raw.githubusercontent.com/wangpao/vps/main/clean_vps.s
 
 
 bash <(curl -fsSL https://raw.githubusercontent.com/wangpao/vps/main/install-Joe-node.sh)
+
 bash <(curl -fsSL https://raw.githubusercontent.com/wangpao/vps/main/TTMAQ.sh)

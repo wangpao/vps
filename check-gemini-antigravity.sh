@@ -14,6 +14,7 @@ FORCE_DIRECT=0
 TEST_MODE="both" # both | v4 | v6
 GEMINI_KEY="${GEMINI_API_KEY:-}"
 AG_TOKEN="${ANTIGRAVITY_TOKEN:-}"
+NO_PROMPT=0
 USE_COLOR=1
 
 if [ ! -t 1 ] || [ -n "${NO_COLOR:-}" ]; then
@@ -51,11 +52,15 @@ Options:
       --direct       Ignore HTTP_PROXY / HTTPS_PROXY / ALL_PROXY environment variables
   -k, --gemini-key K Optional Gemini API key (or set GEMINI_API_KEY) for live API location test
   -t, --ag-token T   Optional Antigravity OAuth access token (or set ANTIGRAVITY_TOKEN) for live loadCodeAssist test
+  -n, --no-prompt    Do not prompt for an API key interactively
       --timeout SEC  Curl max-time in seconds (default: 10)
       --no-color     Disable ANSI colors
   -h, --help         Show this help message
 
 Notes:
+  * When run interactively without -k / -t (or env vars), the script prompts
+    once for an optional Gemini API Key (or ya29... OAuth token). Press Enter
+    to skip and run in zero-credential mode.
   * Without -k / -t, Google's API gateways (cloudcode-pa.googleapis.com /
     generativelanguage.googleapis.com) check auth before region, so the script
     evaluates Google's IP geolocation via unauthenticated Google endpoints,
@@ -79,6 +84,7 @@ while [ $# -gt 0 ]; do
         -t|--ag-token)
             [ $# -lt 2 ] && { echo "Missing value for $1" >&2; exit 2; }
             AG_TOKEN="$2"; shift 2 ;;
+        -n|--no-prompt|--non-interactive) NO_PROMPT=1; shift ;;
         --timeout)
             [ $# -lt 2 ] && { echo "Missing value for $1" >&2; exit 2; }
             TIMEOUT="$2"; shift 2 ;;
@@ -210,7 +216,7 @@ run_stack_suite() {
     _geo_org=""
     _remote_check="$(run_curl "$_flag" -s -o /dev/null -w '%{remote_ip}' "https://www.google.com/generate_204" 2>/dev/null || true)"
     if [ -z "$_remote_check" ]; then
-        printf "  Egress IP (%s)             : %bUnavailable (no %s connectivity to Google)%b\n\n" "$_label" "$C_YELLOW" "$_label" "$C_RESET"
+        printf "  Egress IP (%s)            : %bUnavailable (no %s connectivity to Google)%b\n\n" "$_label" "$C_YELLOW" "$_label" "$C_RESET"
         eval "STACK_${_ver}_AVAIL=0"
         return 0
     fi
@@ -218,7 +224,7 @@ run_stack_suite() {
         case "$_remote_check" in
             *:*) ;;
             *)
-                printf "  Egress IP (%s)             : %bSkipped (curl -6 routed via IPv4/proxy: %s)%b\n\n" "$_label" "$C_YELLOW" "$_remote_check" "$C_RESET"
+                printf "  Egress IP (%s)            : %bSkipped (curl -6 routed via IPv4/proxy: %s)%b\n\n" "$_label" "$C_YELLOW" "$_remote_check" "$C_RESET"
                 eval "STACK_${_ver}_AVAIL=0"
                 return 0
                 ;;
@@ -253,7 +259,7 @@ run_stack_suite() {
     fi
 
     if [ -z "$_pub_ip" ]; then
-        printf "  Egress IP (%s)             : %bUnavailable (no %s egress IP)%b\n\n" "$_label" "$C_YELLOW" "$_label" "$C_RESET"
+        printf "  Egress IP (%s)            : %bUnavailable (no %s egress IP)%b\n\n" "$_label" "$C_YELLOW" "$_label" "$C_RESET"
         eval "STACK_${_ver}_AVAIL=0"
         return 0
     fi
@@ -397,6 +403,9 @@ run_stack_suite() {
         elif grep -qi "User location is not supported" "$_ag_body" 2>/dev/null; then
             _live_ag_status="blocked"
             printf "  Antigravity (Live Token)    : %bFAIL (User location is not supported for the API use)%b\n" "$C_RED" "$C_RESET"
+        elif [ "$_ag_code" = "401" ]; then
+            _live_ag_status="auth_error"
+            printf "  Antigravity (Live Token)    : %bToken expired or invalid (HTTP 401)%b\n" "$C_YELLOW" "$C_RESET"
         else
             _live_ag_status="error"
             _err_msg="$(json_extract_str "message" <"$_ag_body")"
@@ -429,6 +438,49 @@ run_stack_suite() {
     echo ""
 }
 
+prompt_credentials() {
+    if [ "$NO_PROMPT" -eq 1 ] || [ -n "$GEMINI_KEY" ] || [ -n "$AG_TOKEN" ]; then
+        return 0
+    fi
+    if [ ! -t 0 ] && [ ! -t 1 ]; then
+        return 0
+    fi
+    if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+        return 0
+    fi
+
+    printf "Optional Gemini API Key (or ya29... OAuth token; press Enter to skip): " >/dev/tty
+    _echo_off=0
+    if command -v stty >/dev/null 2>&1; then
+        if stty -echo </dev/tty >/dev/tty 2>/dev/null; then
+            _echo_off=1
+        fi
+    fi
+    _cred_input=""
+    IFS= read -r _cred_input </dev/tty || _cred_input=""
+    if [ "$_echo_off" -eq 1 ]; then
+        stty echo </dev/tty >/dev/tty 2>/dev/null || true
+    fi
+    printf "\n" >/dev/tty
+
+    _cred_input="$(printf '%s' "$_cred_input" | tr -d '[:space:]')"
+    if [ -z "$_cred_input" ]; then
+        printf "  -> No key provided; running unauthenticated checks.\n\n" >/dev/tty
+        return 0
+    fi
+
+    case "$_cred_input" in
+        ya29.*)
+            AG_TOKEN="$_cred_input"
+            printf "  -> Detected OAuth token (ya29...); will run live Antigravity loadCodeAssist check.\n\n" >/dev/tty
+            ;;
+        *)
+            GEMINI_KEY="$_cred_input"
+            printf "  -> Gemini API Key received; will run live Gemini API check.\n\n" >/dev/tty
+            ;;
+    esac
+}
+
 printf "%bGoogle Gemini & Antigravity Node Checker%b\n" "$C_BOLD" "$C_RESET"
 if [ -n "$PROXY_URL" ]; then
     printf "Mode: Proxy (%s)\n\n" "$PROXY_URL"
@@ -437,6 +489,8 @@ elif [ "$FORCE_DIRECT" -eq 1 ]; then
 else
     printf "Mode: Default environment\n\n"
 fi
+
+prompt_credentials
 
 DEFAULT_STACK=""
 STACK_4_AVAIL=0
@@ -474,6 +528,8 @@ print_stack_verdict() {
         printf "  IPv%s Antigravity : %bFAIL (%s)%b\n" "$_v" "$C_RED" "$_la" "$C_RESET"
     elif [ "$_lg" = "blocked" ]; then
         printf "  IPv%s Antigravity : %bLIKELY FAIL (Gemini API blocked on this IP)%b\n" "$_v" "$C_RED" "$C_RESET"
+    elif [ "$_lg" = "ok" ]; then
+        printf "  IPv%s Antigravity : %bPASS (Gemini API verified on this IP; Google region: %s)%b\n" "$_v" "$C_GREEN" "${_cc3:-$_k4}" "$C_RESET"
     elif [ "$_blk" -eq 1 ]; then
         printf "  IPv%s Antigravity : %bFAIL (Google maps IP to unsupported region: %s)%b\n" "$_v" "$C_RED" "${_cc3:-$_k4}" "$C_RESET"
     elif [ "$_web" -eq 1 ]; then

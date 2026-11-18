@@ -431,6 +431,8 @@ run_stack_suite() {
         printf "  Antigravity : %bWARN%b (%s)\n" "$C_YELLOW" "$C_RESET" "$_live_ag_detail"
     elif [ "$_ag_ep_issue" = "blocked" ]; then
         printf "  Antigravity : %bFAIL%b (Endpoint blocked: User location is not supported)\n" "$C_RED" "$C_RESET"
+    elif [ "$_region_blocked" -eq 1 ] && [ "$_live_gem_status" = "ok" ]; then
+        printf "  Antigravity : %bUNCERTAIN%b (Web=%s but Gemini API=OK; verify with ya29... OAuth token)\n" "$C_YELLOW" "$C_RESET" "${_g_region:-$_k4_loc}"
     elif [ "$_region_blocked" -eq 1 ]; then
         printf "  Antigravity : %bFAIL%b (Unsupported region: %s)\n" "$C_RED" "$C_RESET" "$_loc_label"
     elif [ -n "$_ag_ep_issue" ]; then
@@ -462,6 +464,7 @@ run_stack_suite() {
     eval "RES_${_ver}_K4='$_k4_loc'"
     eval "RES_${_ver}_GEM_WEB='$_gem_web_ok'"
     eval "RES_${_ver}_BLOCKED='$_region_blocked'"
+    eval "RES_${_ver}_EP_ISSUE='$_ag_ep_issue'"
     eval "RES_${_ver}_LIVE_GEM='$_live_gem_status'"
     eval "RES_${_ver}_LIVE_AG='$_live_ag_status'"
 }
@@ -516,8 +519,8 @@ DEFAULT_STACK=""
 DEFAULT_REMOTE_IP=""
 STACK_4_AVAIL=0; STACK_4_REASON=""
 STACK_6_AVAIL=0; STACK_6_REASON=""
-RES_4_CC3=""; RES_4_K4=""; RES_4_GEM_WEB=0; RES_4_BLOCKED=0; RES_4_LIVE_GEM="skipped"; RES_4_LIVE_AG="skipped"
-RES_6_CC3=""; RES_6_K4=""; RES_6_GEM_WEB=0; RES_6_BLOCKED=0; RES_6_LIVE_GEM="skipped"; RES_6_LIVE_AG="skipped"
+RES_4_CC3=""; RES_4_K4=""; RES_4_GEM_WEB=0; RES_4_BLOCKED=0; RES_4_EP_ISSUE=""; RES_4_LIVE_GEM="skipped"; RES_4_LIVE_AG="skipped"
+RES_6_CC3=""; RES_6_K4=""; RES_6_GEM_WEB=0; RES_6_BLOCKED=0; RES_6_EP_ISSUE=""; RES_6_LIVE_GEM="skipped"; RES_6_LIVE_AG="skipped"
 
 printf "%b[Network]%b\n" "$C_BOLD$C_CYAN" "$C_RESET"
 printf "  Mode        : %s\n" "$_mode_str"
@@ -551,6 +554,7 @@ format_stack_verdict() {
     eval "_k4=\$RES_${_v}_K4"
     eval "_web=\$RES_${_v}_GEM_WEB"
     eval "_blk=\$RES_${_v}_BLOCKED"
+    eval "_epi=\$RES_${_v}_EP_ISSUE"
     eval "_lg=\$RES_${_v}_LIVE_GEM"
     eval "_la=\$RES_${_v}_LIVE_AG"
 
@@ -558,12 +562,20 @@ format_stack_verdict() {
         printf "%bPASS%b (OAuth verified)" "$C_GREEN" "$C_RESET"
     elif [ "$_la" = "blocked" ] || [ "$_la" = "ineligible" ]; then
         printf "%bFAIL%b (%s)" "$C_RED" "$C_RESET" "$_la"
+    elif [ "$_la" = "auth_error" ]; then
+        printf "%bWARN%b (OAuth token expired/invalid)" "$C_YELLOW" "$C_RESET"
+    elif [ "$_epi" = "blocked" ]; then
+        printf "%bFAIL%b (Endpoint blocked)" "$C_RED" "$C_RESET"
+    elif [ "$_blk" -eq 1 ] && [ "$_lg" = "ok" ]; then
+        printf "%bSPLIT%b (Web=%s, API=OK)" "$C_YELLOW" "$C_RESET" "${_cc3:-$_k4}"
+    elif [ "$_blk" -eq 1 ]; then
+        printf "%bFAIL%b (Unsupported: %s)" "$C_RED" "$C_RESET" "${_cc3:-$_k4}"
+    elif [ -n "$_epi" ]; then
+        printf "%bWARN%b (Endpoint: %s)" "$C_YELLOW" "$C_RESET" "$_epi"
     elif [ "$_lg" = "blocked" ]; then
         printf "%bLIKELY FAIL%b (Gemini API blocked)" "$C_RED" "$C_RESET"
     elif [ "$_lg" = "ok" ]; then
         printf "%bPASS%b (API verified, %s)" "$C_GREEN" "$C_RESET" "${_cc3:-$_k4}"
-    elif [ "$_blk" -eq 1 ]; then
-        printf "%bFAIL%b (Unsupported: %s)" "$C_RED" "$C_RESET" "${_cc3:-$_k4}"
     elif [ "$_web" -eq 1 ]; then
         printf "%bLIKELY OK%b (%s)" "$C_GREEN" "$C_RESET" "${_cc3:-$_k4}"
     else
@@ -590,7 +602,9 @@ if [ "$TEST_MODE" = "both" ] && [ "$STACK_4_AVAIL" -eq 1 ] && [ "$STACK_6_AVAIL"
     fi
 fi
 
-if [ -z "$GEMINI_KEY" ] && [ -z "$AG_TOKEN" ]; then
+if [ -z "$AG_TOKEN" ] && { { [ "$RES_4_BLOCKED" -eq 1 ] && [ "$RES_4_LIVE_GEM" = "ok" ]; } || { [ "$RES_6_BLOCKED" -eq 1 ] && [ "$RES_6_LIVE_GEM" = "ok" ]; }; }; then
+    printf "  Note : Web geo is blocked while Gemini API passed. Pass -t ya29... to confirm Antigravity.\n"
+elif [ -z "$GEMINI_KEY" ] && [ -z "$AG_TOKEN" ]; then
     printf "  Note : Pass -k/-t (or paste a key) to verify datacenter/ASN blocks.\n"
 fi
 printf "============================================================\n"

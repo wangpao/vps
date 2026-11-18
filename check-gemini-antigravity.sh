@@ -15,6 +15,7 @@ TEST_MODE="both" # both | v4 | v6
 GEMINI_KEY="${GEMINI_API_KEY:-}"
 AG_TOKEN="${ANTIGRAVITY_TOKEN:-}"
 NO_PROMPT=0
+VERBOSE=0
 USE_COLOR=1
 
 if [ ! -t 1 ] || [ -n "${NO_COLOR:-}" ]; then
@@ -53,6 +54,7 @@ Options:
   -k, --gemini-key K Optional Gemini API key (or set GEMINI_API_KEY) for live API location test
   -t, --ag-token T   Optional Antigravity OAuth access token (or set ANTIGRAVITY_TOKEN) for live loadCodeAssist test
   -n, --no-prompt    Do not prompt for an API key interactively
+  -v, --verbose      Show detailed per-endpoint HTTP status lines
       --timeout SEC  Curl max-time in seconds (default: 10)
       --no-color     Disable ANSI colors
   -h, --help         Show this help message
@@ -85,6 +87,7 @@ while [ $# -gt 0 ]; do
             [ $# -lt 2 ] && { echo "Missing value for $1" >&2; exit 2; }
             AG_TOKEN="$2"; shift 2 ;;
         -n|--no-prompt|--non-interactive) NO_PROMPT=1; shift ;;
+        -v|--verbose) VERBOSE=1; shift ;;
         --timeout)
             [ $# -lt 2 ] && { echo "Missing value for $1" >&2; exit 2; }
             TIMEOUT="$2"; shift 2 ;;
@@ -184,23 +187,16 @@ json_extract_str() {
 }
 
 check_default_stack() {
-    printf "%b=== Default Egress Stack (No -4/-6 Forced) ===%b\n" "$C_BOLD$C_CYAN" "$C_RESET"
     _remote_ip="$(run_curl "" -s -o /dev/null -w '%{remote_ip}' "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist" 2>/dev/null || true)"
+    DEFAULT_REMOTE_IP="$_remote_ip"
     if [ -z "$_remote_ip" ]; then
-        printf "  cloudcode-pa.googleapis.com : %bUnreachable / Connection Failed%b\n" "$C_RED" "$C_RESET"
+        DEFAULT_STACK="err"
     else
         case "$_remote_ip" in
-            *:*)
-                printf "  cloudcode-pa.googleapis.com : %bIPv6 preferred%b (%s)\n" "$C_YELLOW" "$C_RESET" "$_remote_ip"
-                DEFAULT_STACK="v6"
-                ;;
-            *)
-                printf "  cloudcode-pa.googleapis.com : %bIPv4 preferred%b (%s)\n" "$C_GREEN" "$C_RESET" "$_remote_ip"
-                DEFAULT_STACK="v4"
-                ;;
+            *:*) DEFAULT_STACK="v6" ;;
+            *) DEFAULT_STACK="v4" ;;
         esac
     fi
-    echo ""
 }
 
 run_stack_suite() {
@@ -208,24 +204,22 @@ run_stack_suite() {
     _flag="-$_ver"
     _label="IPv$_ver"
 
-    printf "%b=== %s Diagnostics ===%b\n" "$C_BOLD$C_CYAN" "$_label" "$C_RESET"
-
     # 1. Verify actual stack connectivity & Public IP / GeoIP
     _pub_ip=""
     _geo_country=""
     _geo_org=""
     _remote_check="$(run_curl "$_flag" -s -o /dev/null -w '%{remote_ip}' "https://www.google.com/generate_204" 2>/dev/null || true)"
     if [ -z "$_remote_check" ]; then
-        printf "  Egress IP (%s)            : %bUnavailable (no %s connectivity to Google)%b\n\n" "$_label" "$C_YELLOW" "$_label" "$C_RESET"
         eval "STACK_${_ver}_AVAIL=0"
+        eval "STACK_${_ver}_REASON='Unavailable'"
         return 0
     fi
     if [ "$_ver" = "6" ]; then
         case "$_remote_check" in
             *:*) ;;
             *)
-                printf "  Egress IP (%s)            : %bSkipped (curl -6 routed via IPv4/proxy: %s)%b\n\n" "$_label" "$C_YELLOW" "$_remote_check" "$C_RESET"
                 eval "STACK_${_ver}_AVAIL=0"
+                eval "STACK_${_ver}_REASON='Proxied via IPv4 (${_remote_check})'"
                 return 0
                 ;;
         esac
@@ -259,13 +253,11 @@ run_stack_suite() {
     fi
 
     if [ -z "$_pub_ip" ]; then
-        printf "  Egress IP (%s)            : %bUnavailable (no %s egress IP)%b\n\n" "$_label" "$C_YELLOW" "$_label" "$C_RESET"
         eval "STACK_${_ver}_AVAIL=0"
+        eval "STACK_${_ver}_REASON='No egress IP'"
         return 0
     fi
     eval "STACK_${_ver}_AVAIL=1"
-
-    printf "  Egress IP                   : %s (GeoIP: %s | %s)\n" "$_pub_ip" "${_geo_country:-unknown}" "${_geo_org:-unknown}"
 
     # 2. Gemini Web Check (https://gemini.google.com/?hl=en)
     _gem_file="$TMP_DIR/gemini_${_ver}.html"
@@ -280,24 +272,12 @@ run_stack_suite() {
             _gem_flag=1
         fi
         _gem_cc3="$(grep -Eo ',2,1,200,"[A-Z]{3}"' "$_gem_file" 2>/dev/null | head -n 1 | sed 's/,2,1,200,"//;s/"//')"
-        if [ -n "$_gem_cc3" ]; then
-            _gem_cc2="$(alpha3_to_alpha2 "$_gem_cc3")"
-        fi
-        if [ -n "$_gem_cc3" ] && is_blocked_country_code "$_gem_cc3"; then
-            printf "  Gemini Web                  : %bNo%b (Google Country: %s%s - Unsupported)%b\n" "$C_RED" "$C_RESET" "$_gem_cc3" "${_gem_cc2:+/$_gem_cc2}" "$C_RESET"
-        elif [ -n "$_gem_cc3" ]; then
+        [ -n "$_gem_cc3" ] && _gem_cc2="$(alpha3_to_alpha2 "$_gem_cc3")"
+        if [ -n "$_gem_cc3" ] && ! is_blocked_country_code "$_gem_cc3"; then
             _gem_web_ok=1
-            printf "  Gemini Web                  : %bYes%b (Google Country: %s%s)\n" "$C_GREEN" "$C_RESET" "$_gem_cc3" "${_gem_cc2:+/$_gem_cc2}"
-        elif [ "$_gem_flag" -eq 1 ]; then
+        elif [ -z "$_gem_cc3" ] && [ "$_gem_flag" -eq 1 ]; then
             _gem_web_ok=1
-            printf "  Gemini Web                  : %bYes%b (Feature flag active; country marker missing)\n" "$C_GREEN" "$C_RESET"
-        else
-            printf "  Gemini Web                  : %bNo%b (No region or feature marker found)\n" "$C_RED" "$C_RESET"
         fi
-    elif [ "$_gem_code" = "403" ] || [ "$_gem_code" = "451" ]; then
-        printf "  Gemini Web                  : %bBlocked (HTTP %s)%b\n" "$C_RED" "$_gem_code" "$C_RESET"
-    else
-        printf "  Gemini Web                  : %bFailed (HTTP %s)%b\n" "$C_RED" "$_gem_code" "$C_RESET"
     fi
 
     # 3. Google IP-inferred location via K4WWud batchexecute
@@ -309,59 +289,39 @@ run_stack_suite() {
         "https://gemini.google.com/_/BardChatUi/data/batchexecute" >"$_rpc_file" 2>/dev/null; then
         _k4_loc="$(grep 'K4WWud' "$_rpc_file" 2>/dev/null | sed -n 's/.*\[\\"\([^\\"]*\)\\",\\"SWML_DESCRIPTION_FROM_YOUR_INTERNET_ADDRESS.*/\1/p' | head -n 1)"
     fi
-    if [ -n "$_k4_loc" ]; then
-        if is_blocked_location_name "$_k4_loc"; then
-            printf "  Google IP Geo (K4WWud)      : %b%s (UNSUPPORTED REGION)%b\n" "$C_RED" "$_k4_loc" "$C_RESET"
-        else
-            printf "  Google IP Geo (K4WWud)      : %b%s%b\n" "$C_GREEN" "$_k4_loc" "$C_RESET"
-        fi
-    else
-        printf "  Google IP Geo (K4WWud)      : %bUnavailable%b\n" "$C_YELLOW" "$C_RESET"
-    fi
 
     # 4. Google Search IP reputation / language region check
     _gs_hdr="$TMP_DIR/gs_${_ver}.hdr"
     _gs_body="$TMP_DIR/gs_${_ver}.html"
     _gs_code="$(run_curl "$_flag" -sL -A "$UA_BROWSER" -D "$_gs_hdr" -o "$_gs_body" -w '%{http_code}' "https://www.google.com/search?q=test&hl=en" 2>/dev/null || echo "000")"
+    _gs_lang=""
+    _gs_status="unexpected"
     if [ "$_gs_code" = "429" ] || grep -qi "sorry/index" "$_gs_hdr" "$_gs_body" 2>/dev/null; then
-        printf "  Google Search Reputation    : %bCAPTCHA / Rate-Limited (HTTP %s - dirty/datacenter IP risk)%b\n" "$C_YELLOW" "$_gs_code" "$C_RESET"
+        _gs_status="captcha"
     elif [ "$_gs_code" = "200" ]; then
+        _gs_status="clean"
         _gs_lang="$(grep -Eo '<html[^>]*lang="[^"]+"' "$_gs_body" 2>/dev/null | head -n 1 | sed 's/.*lang="//;s/"//')"
-        printf "  Google Search Reputation    : %bClean (HTTP 200%s)%b\n" "$C_GREEN" "${_gs_lang:+, lang=$_gs_lang}" "$C_RESET"
-    else
-        printf "  Google Search Reputation    : %bUnexpected (HTTP %s)%b\n" "$C_YELLOW" "$_gs_code" "$C_RESET"
     fi
 
     # 5. Antigravity Website & Cloud Code Assist API Reachability
     _ag_web_code="$(run_curl "$_flag" -s -o /dev/null -w '%{http_code}' "https://antigravity.google/" 2>/dev/null || echo "000")"
-    if [ "$_ag_web_code" = "200" ] || [ "$_ag_web_code" = "301" ] || [ "$_ag_web_code" = "302" ]; then
-        printf "  antigravity.google          : %bReachable (HTTP %s)%b\n" "$C_GREEN" "$_ag_web_code" "$C_RESET"
-    else
-        printf "  antigravity.google          : %bFailed (HTTP %s)%b\n" "$C_RED" "$_ag_web_code" "$C_RESET"
-    fi
-
     _cc_prod_body="$TMP_DIR/cc_prod_${_ver}.json"
     _cc_prod_code="$(run_curl "$_flag" -s -H 'Content-Type: application/json' -d '{}' -o "$_cc_prod_body" -w '%{http_code}' "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist" 2>/dev/null || echo "000")"
-    if [ "$_cc_prod_code" = "401" ]; then
-        printf "  cloudcode-pa (prod)         : %bReachable (HTTP 401 auth-gated)%b\n" "$C_GREEN" "$C_RESET"
-    elif grep -qi "User location is not supported" "$_cc_prod_body" 2>/dev/null; then
-        printf "  cloudcode-pa (prod)         : %bBLOCKED (User location is not supported)%b\n" "$C_RED" "$C_RESET"
-    else
-        printf "  cloudcode-pa (prod)         : %bHTTP %s%b\n" "$C_YELLOW" "$_cc_prod_code" "$C_RESET"
-    fi
-
     _cc_daily_body="$TMP_DIR/cc_daily_${_ver}.json"
     _cc_daily_code="$(run_curl "$_flag" -s -H 'Content-Type: application/json' -d '{}' -o "$_cc_daily_body" -w '%{http_code}' "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist" 2>/dev/null || echo "000")"
-    if [ "$_cc_daily_code" = "401" ]; then
-        printf "  daily-cloudcode-pa          : %bReachable (HTTP 401 auth-gated)%b\n" "$C_GREEN" "$C_RESET"
-    elif grep -qi "User location is not supported" "$_cc_daily_body" 2>/dev/null; then
-        printf "  daily-cloudcode-pa          : %bBLOCKED (User location is not supported)%b\n" "$C_RED" "$C_RESET"
+
+    _ag_ep_issue=""
+    if grep -qi "User location is not supported" "$_cc_prod_body" "$_cc_daily_body" 2>/dev/null; then
+        _ag_ep_issue="blocked"
     else
-        printf "  daily-cloudcode-pa          : %bHTTP %s%b\n" "$C_YELLOW" "$_cc_daily_code" "$C_RESET"
+        [ "$_ag_web_code" != "200" ] && [ "$_ag_web_code" != "301" ] && [ "$_ag_web_code" != "302" ] && _ag_ep_issue="antigravity.google=$_ag_web_code"
+        [ "$_cc_prod_code" != "401" ] && _ag_ep_issue="${_ag_ep_issue:+$_ag_ep_issue, }cloudcode-pa=$_cc_prod_code"
+        [ "$_cc_daily_code" != "401" ] && _ag_ep_issue="${_ag_ep_issue:+$_ag_ep_issue, }daily-cloudcode-pa=$_cc_daily_code"
     fi
 
     # 6. Optional Live Authenticated API Probes
     _live_gem_status="skipped"
+    _live_gem_detail=""
     if [ -n "$GEMINI_KEY" ]; then
         _gapi_body="$TMP_DIR/gapi_${_ver}.json"
         _gapi_code="$(run_curl "$_flag" -s -H 'Content-Type: application/json' \
@@ -370,18 +330,17 @@ run_stack_suite() {
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_KEY}" 2>/dev/null || echo "000")"
         if [ "$_gapi_code" = "200" ]; then
             _live_gem_status="ok"
-            printf "  Gemini API (Live Key)       : %bPASS (HTTP 200)%b\n" "$C_GREEN" "$C_RESET"
         elif grep -qi "User location is not supported" "$_gapi_body" 2>/dev/null; then
             _live_gem_status="blocked"
-            printf "  Gemini API (Live Key)       : %bFAIL (400 User location is not supported for the API use)%b\n" "$C_RED" "$C_RESET"
         else
             _live_gem_status="error"
             _err_msg="$(json_extract_str "message" <"$_gapi_body")"
-            printf "  Gemini API (Live Key)       : %bHTTP %s (%s)%b\n" "$C_YELLOW" "$_gapi_code" "${_err_msg:-unknown}" "$C_RESET"
+            _live_gem_detail="HTTP $_gapi_code${_err_msg:+ ($_err_msg)}"
         fi
     fi
 
     _live_ag_status="skipped"
+    _live_ag_detail=""
     if [ -n "$AG_TOKEN" ]; then
         _ag_body="$TMP_DIR/ag_live_${_ver}.json"
         _ag_code="$(run_curl "$_flag" -s \
@@ -394,26 +353,22 @@ run_stack_suite() {
         if [ "$_ag_code" = "200" ]; then
             if grep -qiE "ineligibleTiers|INELIGIBLE|UNSUPPORTED_LOCATION" "$_ag_body" 2>/dev/null && ! grep -q "cloudaicompanionProject" "$_ag_body" 2>/dev/null; then
                 _live_ag_status="ineligible"
-                printf "  Antigravity (Live Token)    : %bINELIGIBLE (Account/Region ineligible in loadCodeAssist)%b\n" "$C_RED" "$C_RESET"
             else
                 _live_ag_status="ok"
-                _proj="$(json_extract_str "cloudaicompanionProject" <"$_ag_body")"
-                printf "  Antigravity (Live Token)    : %bPASS (HTTP 200%s)%b\n" "$C_GREEN" "${_proj:+, project=$_proj}" "$C_RESET"
+                _live_ag_detail="$(json_extract_str "cloudaicompanionProject" <"$_ag_body")"
             fi
         elif grep -qi "User location is not supported" "$_ag_body" 2>/dev/null; then
             _live_ag_status="blocked"
-            printf "  Antigravity (Live Token)    : %bFAIL (User location is not supported for the API use)%b\n" "$C_RED" "$C_RESET"
         elif [ "$_ag_code" = "401" ]; then
             _live_ag_status="auth_error"
-            printf "  Antigravity (Live Token)    : %bToken expired or invalid (HTTP 401)%b\n" "$C_YELLOW" "$C_RESET"
         else
             _live_ag_status="error"
             _err_msg="$(json_extract_str "message" <"$_ag_body")"
-            printf "  Antigravity (Live Token)    : %bHTTP %s (%s)%b\n" "$C_YELLOW" "$_ag_code" "${_err_msg:-unknown}" "$C_RESET"
+            _live_ag_detail="HTTP $_ag_code${_err_msg:+ ($_err_msg)}"
         fi
     fi
 
-    # 7. Per-stack Eligibility Summary
+    # 7. Region & Verdict Calculation
     _region_blocked=0
     if [ -n "$_gem_cc3" ] && is_blocked_country_code "$_gem_cc3"; then
         _region_blocked=1
@@ -423,19 +378,92 @@ run_stack_suite() {
         _region_blocked=1
     fi
 
-    # Detect GeoIP mismatch ("送中" / IPv4 vs GeoIP discrepancy)
-    if [ -n "$_geo_country" ] && [ -n "$_gem_cc2" ] && [ "$_geo_country" != "$_gem_cc2" ]; then
-        printf "  GeoIP vs Google Mismatch    : %bWarning: ipinfo=%s, Google=%s%b\n" "$C_YELLOW" "$_geo_country" "$_gem_cc2" "$C_RESET"
+    _g_region="${_gem_cc2:-$_gem_cc3}"
+    _loc_label=""
+    if [ -n "$_g_region" ] && [ -n "$_k4_loc" ]; then
+        _loc_label="$_g_region / $_k4_loc"
+    elif [ -n "$_g_region" ]; then
+        _loc_label="$_g_region"
+    elif [ -n "$_k4_loc" ]; then
+        _loc_label="$_k4_loc"
+    else
+        _loc_label="unknown"
     fi
 
+    _mismatch_note=""
+    if [ -n "$_geo_country" ] && [ -n "$_gem_cc2" ] && [ "$_geo_country" != "$_gem_cc2" ]; then
+        _mismatch_note="GeoIP=$_geo_country != Google=$_gem_cc2"
+    fi
+
+    # Print Clean Section
+    printf "%b[%s Result]%b\n" "$C_BOLD$C_CYAN" "$_label" "$C_RESET"
+    printf "  Egress IP   : %s  (GeoIP: %s | %s)\n" "$_pub_ip" "${_geo_country:-unknown}" "${_geo_org:-unknown}"
+
+    if [ "$_gem_web_ok" -eq 1 ]; then
+        printf "  Gemini Web  : %bYES%b (%s)" "$C_GREEN" "$C_RESET" "$_loc_label"
+    elif [ "$_gem_code" = "403" ] || [ "$_gem_code" = "451" ]; then
+        printf "  Gemini Web  : %bBLOCKED%b (HTTP %s)" "$C_RED" "$C_RESET" "$_gem_code"
+    else
+        printf "  Gemini Web  : %bNO%b (%s)" "$C_RED" "$C_RESET" "$_loc_label"
+    fi
+    if [ -n "$_mismatch_note" ]; then
+        printf "  %b[%s]%b\n" "$C_YELLOW" "$_mismatch_note" "$C_RESET"
+    else
+        printf "\n"
+    fi
+
+    case "$_live_gem_status" in
+        ok)      printf "  Gemini API  : %bPASS%b (HTTP 200)\n" "$C_GREEN" "$C_RESET" ;;
+        blocked) printf "  Gemini API  : %bFAIL%b (400 User location is not supported for the API use)\n" "$C_RED" "$C_RESET" ;;
+        error)   printf "  Gemini API  : %bWARN%b (%s)\n" "$C_YELLOW" "$C_RESET" "$_live_gem_detail" ;;
+        *)       printf "  Gemini API  : %bSKIP%b (no API key)\n" "$C_YELLOW" "$C_RESET" ;;
+    esac
+
+    if [ "$_live_ag_status" = "ok" ]; then
+        printf "  Antigravity : %bPASS%b (OAuth verified%s)\n" "$C_GREEN" "$C_RESET" "${_live_ag_detail:+, project=$_live_ag_detail}"
+    elif [ "$_live_ag_status" = "blocked" ]; then
+        printf "  Antigravity : %bFAIL%b (User location is not supported for the API use)\n" "$C_RED" "$C_RESET"
+    elif [ "$_live_ag_status" = "ineligible" ]; then
+        printf "  Antigravity : %bFAIL%b (Account/Region ineligible in loadCodeAssist)\n" "$C_RED" "$C_RESET"
+    elif [ "$_live_ag_status" = "auth_error" ]; then
+        printf "  Antigravity : %bWARN%b (OAuth token expired/invalid - HTTP 401)\n" "$C_YELLOW" "$C_RESET"
+    elif [ "$_live_ag_status" = "error" ]; then
+        printf "  Antigravity : %bWARN%b (%s)\n" "$C_YELLOW" "$C_RESET" "$_live_ag_detail"
+    elif [ "$_ag_ep_issue" = "blocked" ]; then
+        printf "  Antigravity : %bFAIL%b (Endpoint blocked: User location is not supported)\n" "$C_RED" "$C_RESET"
+    elif [ "$_region_blocked" -eq 1 ]; then
+        printf "  Antigravity : %bFAIL%b (Unsupported region: %s)\n" "$C_RED" "$C_RESET" "$_loc_label"
+    elif [ -n "$_ag_ep_issue" ]; then
+        printf "  Antigravity : %bWARN%b (Endpoint issue: %s)\n" "$C_YELLOW" "$C_RESET" "$_ag_ep_issue"
+    elif [ "$_live_gem_status" = "blocked" ]; then
+        printf "  Antigravity : %bLIKELY FAIL%b (Gemini API blocked on this IP)\n" "$C_RED" "$C_RESET"
+    elif [ "$_live_gem_status" = "ok" ]; then
+        printf "  Antigravity : %bPASS%b (Gemini API + Antigravity endpoints OK; region: %s)\n" "$C_GREEN" "$C_RESET" "${_g_region:-$_k4_loc}"
+    elif [ "$_gem_web_ok" -eq 1 ]; then
+        printf "  Antigravity : %bLIKELY OK%b (Endpoints OK; Google region: %s)\n" "$C_GREEN" "$C_RESET" "${_g_region:-$_k4_loc}"
+    else
+        printf "  Antigravity : %bUNCERTAIN%b (Could not confirm Google region)\n" "$C_YELLOW" "$C_RESET"
+    fi
+
+    case "$_gs_status" in
+        clean)   printf "  Search Risk : %bClean%b%s\n" "$C_GREEN" "$C_RESET" "${_gs_lang:+ (lang=$_gs_lang)}" ;;
+        captcha) printf "  Search Risk : %bCAPTCHA / Rate-Limited%b (HTTP %s - dirty/datacenter IP)\n" "$C_YELLOW" "$C_RESET" "$_gs_code" ;;
+        *)       printf "  Search Risk : %bUnexpected%b (HTTP %s)\n" "$C_YELLOW" "$C_RESET" "$_gs_code" ;;
+    esac
+
+    if [ "$VERBOSE" -eq 1 ]; then
+        printf "  [Verbose]   : gemini.google.com=%s (%s) | K4WWud=%s | antigravity.google=%s | cloudcode-pa=%s | daily=%s\n" \
+            "$_gem_code" "${_gem_cc3:-none}" "${_k4_loc:-none}" "$_ag_web_code" "$_cc_prod_code" "$_cc_daily_code"
+    fi
+    echo ""
+
     # Store results for overall summary
-    eval "RES_${_ver}_CC3='$_gem_cc3'"
+    eval "RES_${_ver}_CC3='${_g_region:-$_gem_cc3}'"
     eval "RES_${_ver}_K4='$_k4_loc'"
     eval "RES_${_ver}_GEM_WEB='$_gem_web_ok'"
     eval "RES_${_ver}_BLOCKED='$_region_blocked'"
     eval "RES_${_ver}_LIVE_GEM='$_live_gem_status'"
     eval "RES_${_ver}_LIVE_AG='$_live_ag_status'"
-    echo ""
 }
 
 prompt_credentials() {
@@ -471,26 +499,38 @@ prompt_credentials() {
     esac
 }
 
-printf "%bGoogle Gemini & Antigravity Node Checker%b\n" "$C_BOLD" "$C_RESET"
+printf "============================================================\n"
+printf " %bGemini & Antigravity Node Check%b\n" "$C_BOLD" "$C_RESET"
+printf "============================================================\n"
 if [ -n "$PROXY_URL" ]; then
-    printf "Mode: Proxy (%s)\n\n" "$PROXY_URL"
+    _mode_str="Proxy ($PROXY_URL)"
 elif [ "$FORCE_DIRECT" -eq 1 ]; then
-    printf "Mode: Direct (--direct, ignoring proxy env)\n\n"
+    _mode_str="Direct (--direct)"
 else
-    printf "Mode: Default environment\n\n"
+    _mode_str="Default"
 fi
 
 prompt_credentials
 
 DEFAULT_STACK=""
-STACK_4_AVAIL=0
-STACK_6_AVAIL=0
+DEFAULT_REMOTE_IP=""
+STACK_4_AVAIL=0; STACK_4_REASON=""
+STACK_6_AVAIL=0; STACK_6_REASON=""
 RES_4_CC3=""; RES_4_K4=""; RES_4_GEM_WEB=0; RES_4_BLOCKED=0; RES_4_LIVE_GEM="skipped"; RES_4_LIVE_AG="skipped"
 RES_6_CC3=""; RES_6_K4=""; RES_6_GEM_WEB=0; RES_6_BLOCKED=0; RES_6_LIVE_GEM="skipped"; RES_6_LIVE_AG="skipped"
 
+printf "%b[Network]%b\n" "$C_BOLD$C_CYAN" "$C_RESET"
+printf "  Mode        : %s\n" "$_mode_str"
 if [ "$TEST_MODE" = "both" ]; then
     check_default_stack
+    case "$DEFAULT_STACK" in
+        v4)  printf "  Default     : %bIPv4%b (%s)\n" "$C_GREEN" "$C_RESET" "$DEFAULT_REMOTE_IP" ;;
+        v6)  printf "  Default     : %bIPv6%b (%s)\n" "$C_YELLOW" "$C_RESET" "$DEFAULT_REMOTE_IP" ;;
+        *)   printf "  Default     : %bUnreachable%b\n" "$C_RED" "$C_RESET" ;;
+    esac
 fi
+echo ""
+
 if [ "$TEST_MODE" = "both" ] || [ "$TEST_MODE" = "v4" ]; then
     run_stack_suite 4
 fi
@@ -498,12 +538,14 @@ if [ "$TEST_MODE" = "both" ] || [ "$TEST_MODE" = "v6" ]; then
     run_stack_suite 6
 fi
 
-printf "%b=== Summary & Verdict ===%b\n" "$C_BOLD$C_CYAN" "$C_RESET"
-
-print_stack_verdict() {
+format_stack_verdict() {
     _v="$1"
     eval "_avail=\$STACK_${_v}_AVAIL"
-    [ "$_avail" -eq 0 ] && return 0
+    eval "_reason=\$STACK_${_v}_REASON"
+    if [ "$_avail" -eq 0 ]; then
+        printf "%b%s%b" "$C_YELLOW" "${_reason:-N/A}" "$C_RESET"
+        return 0
+    fi
 
     eval "_cc3=\$RES_${_v}_CC3"
     eval "_k4=\$RES_${_v}_K4"
@@ -513,36 +555,42 @@ print_stack_verdict() {
     eval "_la=\$RES_${_v}_LIVE_AG"
 
     if [ "$_la" = "ok" ]; then
-        printf "  IPv%s Antigravity : %bPASS (Verified with OAuth token)%b\n" "$_v" "$C_GREEN" "$C_RESET"
+        printf "%bPASS%b (OAuth verified)" "$C_GREEN" "$C_RESET"
     elif [ "$_la" = "blocked" ] || [ "$_la" = "ineligible" ]; then
-        printf "  IPv%s Antigravity : %bFAIL (%s)%b\n" "$_v" "$C_RED" "$_la" "$C_RESET"
+        printf "%bFAIL%b (%s)" "$C_RED" "$C_RESET" "$_la"
     elif [ "$_lg" = "blocked" ]; then
-        printf "  IPv%s Antigravity : %bLIKELY FAIL (Gemini API blocked on this IP)%b\n" "$_v" "$C_RED" "$C_RESET"
+        printf "%bLIKELY FAIL%b (Gemini API blocked)" "$C_RED" "$C_RESET"
     elif [ "$_lg" = "ok" ]; then
-        printf "  IPv%s Antigravity : %bPASS (Gemini API verified on this IP; Google region: %s)%b\n" "$_v" "$C_GREEN" "${_cc3:-$_k4}" "$C_RESET"
+        printf "%bPASS%b (API verified, %s)" "$C_GREEN" "$C_RESET" "${_cc3:-$_k4}"
     elif [ "$_blk" -eq 1 ]; then
-        printf "  IPv%s Antigravity : %bFAIL (Google maps IP to unsupported region: %s)%b\n" "$_v" "$C_RED" "${_cc3:-$_k4}" "$C_RESET"
+        printf "%bFAIL%b (Unsupported: %s)" "$C_RED" "$C_RESET" "${_cc3:-$_k4}"
     elif [ "$_web" -eq 1 ]; then
-        printf "  IPv%s Antigravity : %bLIKELY OK (Google region: %s; pass -k/-t for 100%% API verification)%b\n" "$_v" "$C_GREEN" "${_cc3:-$_k4}" "$C_RESET"
+        printf "%bLIKELY OK%b (%s)" "$C_GREEN" "$C_RESET" "${_cc3:-$_k4}"
     else
-        printf "  IPv%s Antigravity : %bUNCERTAIN (Could not confirm Google region eligibility)%b\n" "$_v" "$C_YELLOW" "$C_RESET"
+        printf "%bUNCERTAIN%b" "$C_YELLOW" "$C_RESET"
     fi
 }
 
-print_stack_verdict 4
-print_stack_verdict 6
+printf "%b[Verdict]%b\n" "$C_BOLD$C_CYAN" "$C_RESET"
+if [ "$TEST_MODE" = "v4" ]; then
+    printf "  IPv4 : "; format_stack_verdict 4; printf "\n"
+elif [ "$TEST_MODE" = "v6" ]; then
+    printf "  IPv6 : "; format_stack_verdict 6; printf "\n"
+else
+    printf "  IPv4 : "; format_stack_verdict 4; printf "  |  IPv6 : "; format_stack_verdict 6; printf "\n"
+fi
 
 if [ "$TEST_MODE" = "both" ] && [ "$STACK_4_AVAIL" -eq 1 ] && [ "$STACK_6_AVAIL" -eq 1 ]; then
     if [ "$DEFAULT_STACK" = "v6" ] && [ "$RES_6_BLOCKED" -eq 1 ] && [ "$RES_4_BLOCKED" -eq 0 ]; then
-        printf "\n  %b[!] CRITICAL IPv6 LEAK DETECTED:%b\n" "$C_RED" "$C_RESET"
-        printf "      Your IPv4 (%s) is supported, but cloudcode-pa.googleapis.com prefers IPv6 (%s) which is BLOCKED!\n" "${RES_4_CC3:-$RES_4_K4}" "${RES_6_CC3:-$RES_6_K4}"
-        printf "      Fix: prefer IPv4 in /etc/gai.conf or block Google IPv6 / route IPv6 over clean proxy.\n"
+        printf "  %b[!] CRITICAL IPv6 LEAK:%b IPv4 (%s) works, but default IPv6 (%s) is BLOCKED.\n" \
+            "$C_RED" "$C_RESET" "${RES_4_CC3:-$RES_4_K4}" "${RES_6_CC3:-$RES_6_K4}"
     elif [ "$DEFAULT_STACK" = "v6" ] && [ "$RES_4_CC3" != "$RES_6_CC3" ] && [ -n "$RES_4_CC3" ] && [ -n "$RES_6_CC3" ]; then
-        printf "\n  %b[!] IPv4/IPv6 REGION MISMATCH:%b IPv4=%s, IPv6=%s (default stack is IPv6).\n" "$C_YELLOW" "$C_RESET" "$RES_4_CC3" "$RES_6_CC3"
+        printf "  %b[!] IPv4/IPv6 MISMATCH:%b IPv4=%s, IPv6=%s (default stack is IPv6).\n" \
+            "$C_YELLOW" "$C_RESET" "$RES_4_CC3" "$RES_6_CC3"
     fi
 fi
 
 if [ -z "$GEMINI_KEY" ] && [ -z "$AG_TOKEN" ]; then
-    printf "\n  Tip: For definitive server-side API check (catches datacenter/ASN blocks),\n"
-    printf "       re-run with GEMINI_API_KEY=... or ANTIGRAVITY_TOKEN=...\n"
+    printf "  Note : Pass -k/-t (or paste a key) to verify datacenter/ASN blocks.\n"
 fi
+printf "============================================================\n"

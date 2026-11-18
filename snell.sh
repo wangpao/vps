@@ -384,6 +384,22 @@ outputSnell() {
         echo -e "   ${BLUE}TCP加速(TFO)：${PLAIN} ${RED}${tfo:-true}${PLAIN}"
     fi
     echo -e "   ${BLUE}Snell版本(VER)：${PLAIN} ${RED}${ver}${PLAIN}"
+
+    local host="${IP:-<VPS_IP>}"
+    local surge_ver="5"
+    local surge_extra=", reuse=true"
+    if [[ "${ver}" =~ ^v([0-9]+) ]]; then
+        surge_ver="${BASH_REMATCH[1]}"
+    fi
+    if [[ "${surge_ver}" == "6" ]]; then
+        surge_extra=", mode=${mode:-default}"
+    elif [[ "${surge_ver}" -lt 4 ]] 2>/dev/null; then
+        surge_extra=""
+    fi
+
+    echo ""
+    colorEcho "$YELLOW" "可直接粘贴到 Surge [Proxy] 分组："
+    echo "  Snell = snell, ${host}, ${port}, psk=${psk}, version=${surge_ver}${surge_extra}"
 }
 
 Change_snell(){

@@ -450,18 +450,8 @@ prompt_credentials() {
     fi
 
     printf "Optional Gemini API Key (or ya29... OAuth token; press Enter to skip): " >/dev/tty
-    _echo_off=0
-    if command -v stty >/dev/null 2>&1; then
-        if stty -echo </dev/tty >/dev/tty 2>/dev/null; then
-            _echo_off=1
-        fi
-    fi
     _cred_input=""
     IFS= read -r _cred_input </dev/tty || _cred_input=""
-    if [ "$_echo_off" -eq 1 ]; then
-        stty echo </dev/tty >/dev/tty 2>/dev/null || true
-    fi
-    printf "\n" >/dev/tty
 
     _cred_input="$(printf '%s' "$_cred_input" | tr -d '[:space:]')"
     if [ -z "$_cred_input" ]; then
